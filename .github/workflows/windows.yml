@@ -1,0 +1,155 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign the Windows installer. Fails if the signing secrets named in BUILD.md are missing.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build NSIS
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Node.js 24.20.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install locked desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Check session-status contract
+        run: |
+          node --check web/server.mjs
+          node --check web/lib/note-store.mjs
+          node --check web/session-status.check.mjs
+          node web/session-status.check.mjs
+
+      - name: Require signing material
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Is-Missing([string]$Name) {
+            return [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($Name))
+          }
+          $missing = New-Object System.Collections.Generic.List[string]
+          foreach ($name in @('WINDOWS_CERTIFICATE', 'WINDOWS_CERTIFICATE_PASSWORD')) {
+            if (Is-Missing $name) { $missing.Add($name) }
+          }
+          $config = Get-Content -Raw -Path 'desktop/src-tauri/tauri.conf.json' | ConvertFrom-Json
+          $updater = $config.bundle.createUpdaterArtifacts
+          $updaterOn = $false
+          if ($updater -is [bool]) {
+            $updaterOn = $updater
+          } elseif ($null -ne $updater -and [string]$updater -notin @('', 'false')) {
+            $updaterOn = $true
+          }
+          if ($updaterOn -and (Is-Missing 'TAURI_SIGNING_PRIVATE_KEY')) {
+            $missing.Add('TAURI_SIGNING_PRIVATE_KEY')
+          }
+          $key = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY')
+          if ($updaterOn -and -not [string]::IsNullOrWhiteSpace($key) -and $key -match 'encrypted' -and (Is-Missing 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
+            $missing.Add('TAURI_SIGNING_PRIVATE_KEY_PASSWORD')
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Signing was requested but these GitHub Actions secrets are missing or empty: " + ($missing -join ', ') + ". Expected names are documented in BUILD.md. Values are not printed.")
+            exit 1
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'sangsangtalk-sign.pfx'
+          try {
+            $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE.Trim())
+          } catch {
+            Write-Error 'Signing was requested but WINDOWS_CERTIFICATE is not valid base64. The secret value was not printed.'
+            exit 1
+          }
+          [System.IO.File]::WriteAllBytes($pfx, $bytes)
+          try {
+            $secure = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $secure
+          } catch {
+            Write-Error 'Signing was requested but the PFX could not be imported. No certificate or password was printed.'
+            exit 1
+          } finally {
+            Remove-Item -Force -ErrorAction SilentlyContinue $pfx
+          }
+          if (-not $imported -or [string]::IsNullOrWhiteSpace($imported.Thumbprint)) {
+            Write-Error 'Signing was requested but the PFX did not contain a usable certificate. No certificate details were printed.'
+            exit 1
+          }
+          $env:THUMB_FILE = Join-Path $env:RUNNER_TEMP 'sangsangtalk-thumb.txt'
+          Set-Content -Path $env:THUMB_FILE -Value $imported.Thumbprint -NoNewline -Encoding ascii
+          node desktop/ci/apply-signing-thumb.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build unsigned NSIS installer
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sign) }}
+        working-directory: desktop
+        run: npm run build -- --bundles nsis --no-sign
+
+      - name: Build signed NSIS installer
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build -- --bundles nsis
+
+      - name: Require a valid Authenticode signature
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = Get-ChildItem -Path 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*.exe'
+          if (-not $installers) {
+            Write-Error 'Signing was requested but no NSIS installer was produced.'
+            exit 1
+          }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
+            if ($signature.Status -ne 'Valid') {
+              Write-Error ("Signing was requested but the installer signature status is " + $signature.Status + ".")
+              exit 1
+            }
+          }
+          Write-Output 'installer Authenticode signature is valid'
+
+      - name: Upload executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sangsangtalk-windows-executable
+          if-no-files-found: error
+          path: desktop/src-tauri/target/release/sangsangtalk-desktop.exe
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sangsangtalk-windows-nsis
+          if-no-files-found: error
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe

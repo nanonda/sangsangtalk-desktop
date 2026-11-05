@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The remote SangsangTalk origin is not granted Tauri commands.",
+  "windows": ["main"],
+  "permissions": []
+}

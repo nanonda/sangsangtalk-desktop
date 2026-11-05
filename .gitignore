@@ -1,0 +1,24 @@
+# dependencies and compiler output
+node_modules/
+target/
+desktop/src-tauri/gen/
+
+# secrets, logs, and local runtime data
+.env
+.env.*
+!.env.example
+.credentials/
+credentials/
+*.p12
+*.pfx
+*.pem
+*.key
+web/data/
+*.log
+link-state.txt
+
+# generated packages and workflow downloads
+artifacts/
+dist/
+*.msi
+*-setup.exe
