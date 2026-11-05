@@ -103,7 +103,7 @@ pub fn run() {
             .on_new_window(|_url, _features| NewWindowResponse::Deny)
             .on_download(|_webview, _event| false)
             .build()?;
-            let _ = window.set_icon(app_mark(64));
+            let _ = window.set_icon(png_icon(include_bytes!("../icons/128x128.png")));
 
             let watched = window.clone();
             window.on_window_event(move |event| {
@@ -400,88 +400,14 @@ fn state_word(state: LinkState) -> &'static str {
 }
 
 fn icon_for(state: LinkState) -> Image<'static> {
-    match state {
-        LinkState::SignedIn => filled_circle(22, 140, 78),
-        LinkState::SignedOut => ring(110, 114, 120),
-        LinkState::Disconnected => crossed_circle(186, 48, 42),
-    }
+    let bytes = match state {
+        LinkState::SignedIn => include_bytes!("../icons/tray-signed-in.png").as_slice(),
+        LinkState::SignedOut => include_bytes!("../icons/tray-signed-out.png").as_slice(),
+        LinkState::Disconnected => include_bytes!("../icons/tray-disconnected.png").as_slice(),
+    };
+    png_icon(bytes)
 }
 
-fn filled_circle(red: u8, green: u8, blue: u8) -> Image<'static> {
-    paint(32, |x, y| {
-        let (distance, _) = geometry(x, y);
-        if distance <= 14.0 {
-            Some([red, green, blue, 255])
-        } else {
-            None
-        }
-    })
-}
-
-fn ring(red: u8, green: u8, blue: u8) -> Image<'static> {
-    paint(32, |x, y| {
-        let (distance, _) = geometry(x, y);
-        if distance >= 8.5 && distance <= 14.0 {
-            Some([red, green, blue, 255])
-        } else {
-            None
-        }
-    })
-}
-
-fn crossed_circle(red: u8, green: u8, blue: u8) -> Image<'static> {
-    paint(32, |x, y| {
-        let (distance, center) = geometry(x, y);
-        if distance > 14.0 {
-            return None;
-        }
-        let dx = x as f32 - center;
-        let dy = y as f32 - center;
-        if (dx - dy).abs() <= 1.6 || (dx + dy).abs() <= 1.6 {
-            Some([255, 248, 236, 255])
-        } else {
-            Some([red, green, blue, 255])
-        }
-    })
-}
-
-fn app_mark(size: u32) -> Image<'static> {
-    paint(size, |x, y| {
-        let center = (size as f32 - 1.0) / 2.0;
-        let dx = x as f32 - center;
-        let dy = y as f32 - center;
-        let radius = size as f32 * 0.42;
-        if dx * dx + dy * dy > radius * radius {
-            return None;
-        }
-        let left = ((x as f32) - (center - size as f32 * 0.12))
-            .hypot((y as f32) - (center + size as f32 * 0.03));
-        let right = ((x as f32) - (center + size as f32 * 0.15))
-            .hypot((y as f32) - (center - size as f32 * 0.08));
-        if left <= size as f32 * 0.075 || right <= size as f32 * 0.048 {
-            Some([255, 248, 236, 255])
-        } else {
-            Some([22, 122, 74, 255])
-        }
-    })
-}
-
-fn geometry(x: u32, y: u32) -> (f32, f32) {
-    let center = 15.5;
-    let dx = x as f32 - center;
-    let dy = y as f32 - center;
-    ((dx * dx + dy * dy).sqrt(), center)
-}
-
-fn paint(size: u32, pixel: impl Fn(u32, u32) -> Option<[u8; 4]>) -> Image<'static> {
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            if let Some(color) = pixel(x, y) {
-                let index = ((y * size + x) * 4) as usize;
-                rgba[index..index + 4].copy_from_slice(&color);
-            }
-        }
-    }
-    Image::new_owned(rgba, size, size)
+fn png_icon(bytes: &[u8]) -> Image<'static> {
+    Image::from_bytes(bytes).expect("embedded PNG icon must be valid")
 }
