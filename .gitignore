@@ -22,3 +22,10 @@ artifacts/
 dist/
 *.msi
 *-setup.exe
+
+# local-only
+.local-backup/
+.vscode/
+.cursor/
+Thumbs.db
+.DS_Store

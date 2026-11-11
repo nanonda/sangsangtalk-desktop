@@ -116,6 +116,74 @@ function zulip(method, apiPath, { auth, form, timeoutMs = 20000, signal } = {}) 
   });
 }
 
+
+function zulipBinary(method, apiPath, { timeoutMs = 20000, redirects = 1 } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const request = https.request({
+      hostname: zulipUrl.hostname,
+      port: zulipUrl.port || 443,
+      servername: zulipUrl.hostname,
+      method,
+      path: apiPath,
+      headers: { accept: "image/*,*/*", "user-agent": "SangsangTalk/0.1" },
+      rejectUnauthorized: false,
+    }, (response) => {
+      const location = response.headers.location || "";
+      if (response.statusCode >= 300 && response.statusCode < 400 && redirects > 0 && location) {
+        response.resume();
+        let next = "";
+        try {
+          const target = new URL(location, zulipUrl);
+          if (target.hostname === zulipUrl.hostname) next = `${target.pathname}${target.search}`;
+        } catch {
+          next = "";
+        }
+        if (!next.startsWith("/user_avatars/") && !next.startsWith("/avatar/")) {
+          settle(resolve, { status: response.statusCode, contentType: "", body: Buffer.alloc(0) });
+          return;
+        }
+        zulipBinary("GET", next, { timeoutMs, redirects: redirects - 1 }).then(
+          (value) => settle(resolve, value),
+          (error) => settle(reject, error),
+        );
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 5 * 1024 * 1024) {
+          request.destroy();
+          settle(resolve, { status: 502, contentType: "", body: Buffer.alloc(0) });
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        settle(resolve, {
+          status: response.statusCode,
+          contentType: String(response.headers["content-type"] || "").split(";")[0].trim(),
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    timer = setTimeout(() => {
+      settle(reject, Object.assign(new Error("timeout"), { timeout: true }));
+      request.destroy();
+    }, timeoutMs);
+    request.on("error", (error) => settle(reject, error));
+    request.end();
+  });
+}
+
 function basic(session) {
   return `Basic ${Buffer.from(`${session.email}:${session.apiKey}`).toString("base64")}`;
 }
@@ -329,22 +397,110 @@ function roleName(role) {
   return "member";
 }
 
-async function listDirectory(session) {
-  const result = await zulip("GET", "/api/v1/users", { auth: basic(session) });
+const TITLE_BY_EMAIL = new Map([
+  ["gimsangsang@localhost.localdomain", "\uD300\uC7A5"],
+  ["honggildong@localhost.localdomain", "\uD300\uC7A5"],
+  ["jeonsani@localhost.localdomain", "\uC8FC\uBB34\uAD00"],
+  ["tongsini@localhost.localdomain", "\uC8FC\uBB34\uAD00"],
+  ["gwanjenam@localhost.localdomain", "\uC8FC\uBB34\uAD00"],
+]);
+let titleFieldIdCache = null;
+
+function personEmail(user) {
+  return String(user.delivery_email || user.email || "").trim().toLowerCase();
+}
+
+function profileText(entry) {
+  if (!entry) return "";
+  if (typeof entry === "string") return entry.trim();
+  return typeof entry.value === "string" ? entry.value.trim() : "";
+}
+
+function localAvatarPath(url) {
+  if (typeof url !== "string" || !url.startsWith("/user_avatars/")) return "";
+  const pathOnly = url.split("?")[0];
+  if (pathOnly.includes("..") || pathOnly.includes("\\")) return "";
+  return url;
+}
+
+async function fetchMembers(session) {
+  const result = await zulip(
+    "GET",
+    "/api/v1/users?include_custom_profile_fields=true&client_gravatar=false",
+    { auth: basic(session) },
+  );
   if (result.json?.result !== "success" || !Array.isArray(result.json.members)) {
     const error = new Error("directory");
     error.status = result.status === 401 ? 401 : 502;
     throw error;
   }
-  const people = result.json.members
-    .filter((user) => !user.is_bot && user.is_active !== false && user.user_id !== session.userId)
-    .map((user) => ({
-      userId: user.user_id,
-      fullName: user.full_name || "\uC774\uB984 \uC5C6\uC74C",
-      role: roleName(user.role),
-    }))
+  return result.json.members;
+}
+
+async function titleFieldId(session) {
+  if (titleFieldIdCache) return titleFieldIdCache;
+  try {
+    const result = await zulip("GET", "/api/v1/realm/profile_fields", { auth: basic(session) });
+    const fields = Array.isArray(result.json?.custom_fields) ? result.json.custom_fields : [];
+    const field = fields.find((item) => item.type === 1 && item.name === "\uC9C1\uCC45");
+    if (field?.id) titleFieldIdCache = field.id;
+  } catch {
+    // The email map below covers the case where this realm field cannot be read.
+  }
+  return titleFieldIdCache;
+}
+
+function directoryTitle(user, fieldId) {
+  const data = user.profile_data;
+  const fromProfile = fieldId && data ? profileText(data[String(fieldId)]) : "";
+  if (fromProfile) return fromProfile;
+  return TITLE_BY_EMAIL.get(personEmail(user)) || "";
+}
+
+async function listDirectory(session) {
+  const members = await fetchMembers(session);
+  const fieldId = await titleFieldId(session);
+  const people = members
+    .filter((user) => !user.is_bot && user.is_active !== false)
+    .map((user) => {
+      const title = directoryTitle(user, fieldId);
+      const avatarPath = localAvatarPath(user.avatar_url);
+      return {
+        userId: user.user_id,
+        fullName: user.full_name || "\uC774\uB984 \uC5C6\uC74C",
+        role: roleName(user.role),
+        title,
+        avatarUrl: title && avatarPath ? `/api/avatar/${user.user_id}` : "",
+      };
+    })
     .sort((a, b) => a.fullName.localeCompare(b.fullName, "ko"));
   return { people };
+}
+
+async function handleAvatar(session, userId, response) {
+  const id = Number(userId);
+  if (!Number.isInteger(id) || String(id) !== String(userId)) {
+    sendJson(response, 404, { error: "\uC544\uBC14\uD0C0\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4." });
+    return;
+  }
+  const members = await fetchMembers(session);
+  const user = members.find((item) => item.user_id === id && !item.is_bot && item.is_active !== false);
+  const avatarPath = user ? localAvatarPath(user.avatar_url) : "";
+  if (!avatarPath) {
+    sendJson(response, 404, { error: "\uC544\uBC14\uD0C0\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4." });
+    return;
+  }
+  const upstream = await zulipBinary("GET", avatarPath);
+  if (upstream.status !== 200 || !upstream.body.length || !upstream.contentType.startsWith("image/")) {
+    sendJson(response, 502, { error: "\uC544\uBC14\uD0C0\uB97C \uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4." });
+    return;
+  }
+  response.writeHead(200, {
+    "content-type": upstream.contentType,
+    "cache-control": "private, max-age=300",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(upstream.body);
 }
 
 async function personById(session, userId) {
@@ -640,6 +796,16 @@ async function onRequest(request, response) {
         return;
       }
       sendJson(response, 200, await handleNoteMessages(session));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/avatar/")) {
+      const session = sessionFrom(request);
+      if (!session) {
+        sendJson(response, 401, { error: "\uB85C\uADF8\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4." });
+        return;
+      }
+      await handleAvatar(session, decodeURIComponent(url.pathname.slice("/api/avatar/".length)), response);
       return;
     }
 
