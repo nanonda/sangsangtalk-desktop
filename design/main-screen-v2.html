@@ -47,7 +47,8 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 
 /* ───────── 레일 (v1) ───────── */
 .rail{background:linear-gradient(180deg,var(--navy-700),var(--navy-900));display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:6px}
-.rail .emblem{width:44px;height:44px;border-radius:50%;box-shadow:0 0 0 3px rgba(255,255,255,.18);margin-bottom:14px}
+/* 공식 로고(assets/emblem.png). 남색 위에서는 흰 링 2px로 경계를 세운다 */
+.rail .emblem{width:44px;height:44px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px #fff,0 2px 8px rgba(0,0,0,.18);margin-bottom:14px;display:block;object-fit:cover}
 .rail-btn{position:relative;width:60px;padding:9px 0 7px;border-radius:var(--r-md);display:flex;flex-direction:column;align-items:center;gap:4px;color:rgba(255,255,255,.62);font-size:11px;font-weight:500}
 .rail-btn svg.i{width:22px;height:22px}
 .rail-btn:hover{background:rgba(255,255,255,.08);color:#fff}
@@ -74,8 +75,15 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .list{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel);position:relative}
 .list-head{padding:18px 18px 10px;display:flex;align-items:center;gap:10px}
 .brand{display:flex;align-items:center;gap:8px;flex:1}
-.brand svg{width:38px;height:20px}
 .brand b{font-size:19px;font-weight:800;letter-spacing:-.03em}
+/* v2: 새 대화 알약 버튼 */
+.new-btn{height:34px;padding:0 12px 0 8px;border-radius:17px;background:var(--teal-600);color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;box-shadow:0 2px 8px rgba(20,148,136,.28)}
+.new-btn:hover,.new-btn[aria-expanded=true]{background:var(--teal-700)}
+.new-btn .plus{width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.18);display:grid;place-items:center}
+.new-btn .plus svg{width:12px;height:12px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round}
+.new-btn .chev{width:12px;height:12px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
+.new-btn[aria-expanded=true] .chev{transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce){.new-btn .chev{transition:none}}
 .icon-btn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--ink-2);position:relative}
 .icon-btn:hover{background:var(--bg);color:var(--ink)}
 .icon-btn[aria-expanded=true]{background:var(--bg);color:var(--ink)}
@@ -238,7 +246,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .menu .danger{color:var(--danger-600)}
 .menu .danger:hover{background:var(--danger-50)}
 .menu.compact button{padding:9px 12px;font-weight:500}
-#newMenu{top:58px;left:76px;left:calc(76px + 340px - 18px - 260px);width:260px}
+#newMenu{top:58px;right:18px;width:260px}
 #groupMenu{top:58px;right:20px;width:200px}
 
 /* ───────── v2: 대화상자 ───────── */
@@ -320,15 +328,7 @@ body[data-s=gmenu]  #moreBtn{}
 
   <!-- 레일 -->
   <nav class="rail" aria-label="주 메뉴">
-    <svg class="emblem" viewBox="0 0 64 64" role="img" aria-label="음성군">
-      <defs><clipPath id="em"><circle cx="32" cy="32" r="32"/></clipPath></defs>
-      <g clip-path="url(#em)">
-        <rect width="64" height="64" fill="#0b4a9a"/>
-        <path fill="#17988a" d="M0 36c12 2 24 6 34 4 12-3 20-2 30 1v23H0Z"/>
-        <path fill="#fff" d="M0 30c9-3 19-2 28 0 7 2 14 2 22-2 5-2 10-2 14 0v5c-5-1-9 0-13 2-9 4-16 4-22 2-3-1-4 2-1 4 3 3 8 4 14 4-8 4-17 4-23 0-4-3-3-7 2-9-7-1-14-1-21 2Z"/>
-        <circle cx="38" cy="17" r="6.4" fill="#f08a24"/>
-      </g>
-    </svg>
+    <img class="emblem" src="assets/emblem.png" alt="음성군">
     <button class="rail-btn" aria-current="page"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M8.5 9h7M8.5 12h4.5"/></svg>대화<span class="badge">9</span></button>
     <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg>직원</button>
     <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/></svg>쪽지<span class="badge">1</span></button>
@@ -345,18 +345,8 @@ body[data-s=gmenu]  #moreBtn{}
   <!-- 목록 -->
   <section class="list" aria-label="대화 목록">
     <header class="list-head">
-      <div class="brand">
-        <svg viewBox="0 0 76 40" aria-hidden="true">
-          <g fill="none" stroke-linecap="round">
-            <path id="inf" d="M38 20C30 6 6 6 6 20s24 14 32 0 32-14 32 0-24 14-32 0Z" stroke="#149488" stroke-width="8"/>
-            <use href="#inf" stroke="#fff" stroke-width="5.6"/>
-            <use href="#inf" stroke="#149488" stroke-width="3.6"/>
-            <use href="#inf" stroke="#fff" stroke-width="1.8"/>
-          </g>
-        </svg>
-        <b>상상톡</b>
-      </div>
-      <button class="icon-btn primary" id="newBtn" aria-label="새 대화" aria-haspopup="menu" aria-expanded="false" data-go="new"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      <div class="brand"><b>상상톡</b></div>
+      <button class="new-btn" id="newBtn" aria-haspopup="menu" aria-expanded="false" data-go="new"><span class="plus" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M6 2v8M2 6h8"/></svg></span>새 대화<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
     </header>
     <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="대화방, 이름 검색"></label>
     <div class="chips" role="group" aria-label="필터">

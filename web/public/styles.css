@@ -78,9 +78,8 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
   border-radius: 22px; box-shadow: var(--shadow-2); padding: 30px 28px 28px; overflow: hidden;
 }
 .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
-.login-emblem { width: 52px; height: 52px; border-radius: 50%; flex: none; }
-.brand-name { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 21px; font-weight: 800; letter-spacing: -.03em; }
-.brand-inf { width: 38px; height: 20px; flex: none; }
+.login-emblem { width: 52px; height: 52px; border-radius: 50%; flex: none; display: block; object-fit: cover; box-shadow: 0 0 0 1px #e3e9ee; }
+.brand-name { margin: 0; font-size: 21px; line-height: 1.2; font-weight: 800; letter-spacing: -.03em; }
 .brand-sub { margin: 2px 0 0; color: var(--ink-3); font-size: 12.5px; font-weight: 500; }
 .card h1 { margin: 0; font-size: 19px; font-weight: 800; }
 .lede { margin: 4px 0 0; color: var(--ink-3); font-size: 13px; }
@@ -106,7 +105,7 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
   display: flex; flex-direction: column; align-items: center;
   padding: 16px 0 14px; gap: 6px; min-height: 0; overflow-y: auto; overflow-x: hidden;
 }
-.rail .emblem { width: 44px; height: 44px; border-radius: 50%; box-shadow: 0 0 0 3px rgba(255, 255, 255, .18); margin-bottom: 14px; flex: none; }
+.rail .emblem { width: 44px; height: 44px; border-radius: 50%; display: block; object-fit: cover; box-shadow: 0 0 0 2px #fff; margin-bottom: 14px; flex: none; }
 .rail-btn {
   position: relative; width: 60px; padding: 9px 0 7px; border-radius: var(--r-md);
   display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -131,8 +130,21 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
 /* 2. 목록 */
 .list { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); }
 .list-head { padding: 18px 18px 6px; display: flex; align-items: center; gap: 10px; }
-.brand { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
-.brand b { font-size: 19px; font-weight: 800; letter-spacing: -.03em; }
+.brand { display: flex; align-items: center; flex: 1; min-width: 0; }
+.brand b { font-size: 19px; font-weight: 800; letter-spacing: -.03em; line-height: 34px; white-space: nowrap; }
+.new-talk {
+  height: 34px; padding: 0 12px 0 8px; border-radius: 17px; flex: none; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--teal-600); color: #fff; font-size: 13px; font-weight: 700;
+  box-shadow: 0 2px 8px rgba(20, 148, 136, .28); transition: background .15s, box-shadow .15s;
+}
+.new-talk:hover { background: var(--teal-700); box-shadow: 0 3px 10px rgba(20, 148, 136, .38); }
+.new-talk:active { transform: translateY(1px); }
+.new-talk[aria-expanded="true"] { background: var(--teal-700); }
+.new-talk .plus { width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 255, 255, .18); display: grid; place-items: center; flex: none; }
+.new-talk .plus svg.i { width: 12px; height: 12px; stroke-width: 2.4; }
+.new-talk .chev { width: 12px; height: 12px; stroke-width: 2; transition: transform .15s; }
+.new-talk[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .list-title { margin: 0; padding: 4px 18px 10px; font-size: 13px; font-weight: 600; color: var(--ink-3); }
 .search {
   margin: 0 18px; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px;
@@ -503,7 +515,7 @@ dialog.confirm .alert { padding: 0 28px; text-align: center; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 64px minmax(0, 1fr); }
-  #new-menu { right: 12px; }
+  #new-menu { right: 18px; }
   .rail-btn { width: 52px; font-size: 10px; }
   .rail-btn[aria-current]::before { left: -6px; }
   body:not(.show-thread) .chat { display: none; }
@@ -518,4 +530,5 @@ dialog.confirm .alert { padding: 0 28px; text-align: center; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
+  .new-talk .chev { transition: none; }
 }

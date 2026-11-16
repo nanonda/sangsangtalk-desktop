@@ -11,23 +11,6 @@
 <body class="mode-login">
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
-      <symbol id="emblem" viewBox="0 0 64 64">
-        <clipPath id="emblem-clip"><circle cx="32" cy="32" r="32"/></clipPath>
-        <g clip-path="url(#emblem-clip)">
-          <rect width="64" height="64" fill="#0b4a9a"/>
-          <path fill="#17988a" d="M0 36c12 2 24 6 34 4 12-3 20-2 30 1v23H0Z"/>
-          <path fill="#fff" d="M0 30c9-3 19-2 28 0 7 2 14 2 22-2 5-2 10-2 14 0v5c-5-1-9 0-13 2-9 4-16 4-22 2-3-1-4 2-1 4 3 3 8 4 14 4-8 4-17 4-23 0-4-3-3-7 2-9-7-1-14-1-21 2Z"/>
-          <circle cx="38" cy="17" r="6.4" fill="#f08a24"/>
-        </g>
-      </symbol>
-      <symbol id="infinity" viewBox="0 0 76 40">
-        <g fill="none" stroke-linecap="round">
-          <path id="inf-path" d="M38 20C30 6 6 6 6 20s24 14 32 0 32-14 32 0-24 14-32 0Z" stroke="#149488" stroke-width="8"/>
-          <use href="#inf-path" stroke="#fff" stroke-width="5.6"/>
-          <use href="#inf-path" stroke="#149488" stroke-width="3.6"/>
-          <use href="#inf-path" stroke="#fff" stroke-width="1.8"/>
-        </g>
-      </symbol>
       <symbol id="ico-group" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></symbol>
       <symbol id="ico-mail" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/></symbol>
       <symbol id="ico-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 3v2H6v-2l4-3ZM12 15v5"/></symbol>
@@ -44,9 +27,9 @@
   <main class="gate" id="login-view">
     <form class="card" id="login-form">
       <div class="brand-row">
-        <svg class="login-emblem" role="img" aria-label="음성군"><use href="#emblem"/></svg>
+        <img class="login-emblem" src="/assets/emblem.png" alt="음성군">
         <div>
-          <p class="brand-name"><svg class="brand-inf" aria-hidden="true"><use href="#infinity"/></svg>상상톡</p>
+          <p class="brand-name">상상톡</p>
           <p class="brand-sub">음성군</p>
         </div>
       </div>
@@ -65,7 +48,7 @@
   <div class="shell" id="chat-view" hidden>
     <!-- 1. 레일 -->
     <nav class="rail" aria-label="주 메뉴">
-      <svg class="emblem" role="img" aria-label="음성군"><use href="#emblem"/></svg>
+      <img class="emblem" src="/assets/emblem.png" alt="음성군">
       <button type="button" class="rail-btn" id="rail-talk" data-view="talk">
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M8.5 9h7M8.5 12h4.5"/></svg>대화<span class="badge" id="talk-badge" hidden></span>
       </button>
@@ -99,9 +82,9 @@
     <!-- 2. 목록 -->
     <section class="list" id="list-pane" aria-label="목록">
       <header class="list-head">
-        <div class="brand"><svg class="brand-inf" aria-hidden="true"><use href="#infinity"/></svg><b>상상톡</b></div>
-        <button type="button" class="icon-btn primary" id="new-talk" aria-label="새 대화" title="새 대화" aria-haspopup="menu" aria-expanded="false" aria-controls="new-menu">
-          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <div class="brand"><b>상상톡</b></div>
+        <button type="button" class="new-talk" id="new-talk" aria-haspopup="menu" aria-expanded="false" aria-controls="new-menu">
+          <span class="plus" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>새 대화<svg class="i chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></svg>
         </button>
       </header>
       <div class="menu" id="new-menu" role="menu" aria-label="새 대화" hidden>

@@ -59,6 +59,7 @@ const PUBLIC_FILES = new Map([
   ["/assets/turtle-thumbs.png", "assets/turtle-thumbs.png"],
   ["/assets/turtle-jump.png", "assets/turtle-jump.png"],
   ["/assets/turtle-side.png", "assets/turtle-side.png"],
+  ["/assets/emblem.png", "assets/emblem.png"],
 ]);
 
 const TYPES = {
