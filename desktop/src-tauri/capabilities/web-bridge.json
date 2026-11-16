@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "web-bridge",
+  "description": "The SangsangTalk web app at http://127.0.0.1:43123 may only show notifications and report the unread count.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:43123/*"]
+  },
+  "permissions": ["allow-notify", "allow-set-unread"]
+}
