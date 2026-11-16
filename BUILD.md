@@ -65,6 +65,10 @@ If `sign` is true and a required secret is missing, not valid base64, or does no
 
 The dispatch copies the imported certificate thumbprint into `tauri.conf.json` on the runner only. The committed config has no thumbprint.
 
+## Backup
+
+`ops/backup.ps1` (Windows PowerShell 5.1) runs Zulip's own `manage.py backup` inside the running `zulip` container, copies the tarball to `C:\SangsangTalk-backup\<yyyyMMdd-HHmmss>\`, removes the temporary file in the container, deletes backup folders older than 30 days (`-RetentionDays`, `-BackupRoot`), and appends to `backup.log` in the backup root. It exits non-zero on failure. The tarball contains `/etc/zulip`, including `zulip-secrets.conf`, so keep the backup folder private. Restore steps and the Task Scheduler command are in `ops/restore.md`; nothing is scheduled automatically.
+
 ## Notes
 
 The shell loads `http://127.0.0.1:43123/`. It does not bundle the web server. `lib.rs` writes a diagnostic word to `C:\SangsangTalk\desktop\link-state.txt` and ignores write errors. That path is specific to the development PC and is not a credential. CI does not run the GUI.
