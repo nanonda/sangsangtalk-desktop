@@ -34,7 +34,8 @@
 #     60초 안에 5번 시작하면 더 이상 재시작하지 않고 failed가 된다. 고친 뒤 `systemctl reset-failed sangsangtalk-web` 후 시작.
 #   - 포트 43123을 바꾸면 ops/nginx/sangsangtalk.conf 의 upstream 도 함께 바꾼다.
 #   - MAX_UPLOAD_MB를 바꾸면 nginx 의 /api/files client_max_body_size 도 함께 바꾼다.
-#   - node 경로가 /usr/bin/node 가 아니면 ExecStart를 고친다(`command -v node`). Node 24 기준으로 개발했다.
+#   - Node 24 공식 tarball을 /opt/node 에 설치한 경로(/opt/node/bin/node)를 쓴다(ops/rocky9.md).
+#     다른 곳에 설치했으면 ExecStart를 고친다(`command -v node`). Node 24 기준으로 개발했다.
 
 [Unit]
 Description=SangsangTalk web server (Zulip proxy)
@@ -52,7 +53,7 @@ Group=sangsangtalk
 WorkingDirectory=/opt/sangsangtalk/web
 EnvironmentFile=/etc/sangsangtalk/web.env
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node /opt/sangsangtalk/web/server.mjs
+ExecStart=/opt/node/bin/node /opt/sangsangtalk/web/server.mjs
 Restart=on-failure
 RestartSec=5s
 # 롱폴링(/api/events) 연결이 끊길 때까지 기다리지 않도록 종료 대기 시간을 짧게

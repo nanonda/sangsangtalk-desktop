@@ -14,17 +14,18 @@
 #   ops/backup.sh [옵션]
 #     --backup-root DIR      백업 위치 (기본 /var/backups/sangsangtalk)
 #     --retention-days N     보관 일수 1~3650 (기본 30)
-#     --compose-file FILE    compose 파일 (기본 <저장소>/compose.yaml, 운영 앱 서버는 ops/compose/compose.app.yaml)
+#     --compose-file FILE    compose 파일 (기본 <저장소>/compose.yaml. 운영 ② WAS·DB 서버는 ops/compose/compose.was-db.yaml,
+#                            3계층 [앱] 서버는 ops/compose/compose.app.yaml)
 #     --env-file FILE        docker compose --env-file 로 넘길 파일(선택. 내용은 읽지 않는다)
 #     --service NAME         Zulip 서비스 이름 (기본 zulip)
 #     --notes-file FILE      쪽지 인덱스 경로 (기본 <저장소>/web/data/notes.json)
-#     --notes-only           Zulip 백업 없이 쪽지 인덱스 사본만 만든다(3계층에서 [웹] 서버용)
+#     --notes-only           Zulip 백업 없이 쪽지 인덱스 사본만 만든다(① 웹 서버용)
 #     --dry-run              사전 점검만 하고 할 일을 출력한다(백업·삭제하지 않음, 로그 파일도 쓰지 않음)
 #     -h, --help
 # 예:
-#   [앱] 서버, root로:  /opt/sangsangtalk/ops/backup.sh \
-#     --compose-file /opt/sangsangtalk/ops/compose/compose.app.yaml --env-file /etc/sangsangtalk/zulip.env
-#   [웹] 서버, sangsangtalk 계정으로:  sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
+#   ② WAS·DB 서버, root로:  /opt/sangsangtalk/ops/backup.sh \
+#     --compose-file /opt/sangsangtalk/ops/compose/compose.was-db.yaml --env-file /etc/sangsangtalk/zulip.env
+#   ① 웹 서버, sangsangtalk 계정으로:  sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
 #     --backup-root /var/backups/sangsangtalk-web --notes-file /opt/sangsangtalk/web/data/notes.json
 #   (전체 백업은 docker 와 /etc/sangsangtalk/zulip.env(0600 root)를 쓰므로 root로 실행한다. ops/restore.md 참고)
 set -euo pipefail

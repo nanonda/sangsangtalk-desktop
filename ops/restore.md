@@ -74,7 +74,7 @@ Copy-Item "C:\SangsangTalk-backup\$stamp\notes.json" C:\SangsangTalk\web\data\no
 - 업로드 복원(4단계)은 백업 이후에 새로 올린 파일을 지우지 않는다(덮어쓰기·추가만 한다). DB에는 기록이 없는 파일이 남을 수 있으나 동작에는 지장이 없다.
 - 쪽지 인덱스(`notes.json`)는 반드시 같은 회차 폴더의 사본으로 되돌린다(7단계). 다른 회차의 것을 쓰면 메시지 ID가 맞지 않는다. 사본이 없는 회차(`backup.log`에 `[WARN] 쪽지 인덱스 파일이 없어 건너뜁니다`)라면 7단계를 건너뛴다.
 - **새 PC / 볼륨을 잃은 경우(미검증):** `.env`를 원래 값으로 복구한 뒤 `docker compose up -d`로 빈 스택을 띄우고, 백업의 `zulip-backup/settings/zulip-secrets.conf`를 `zulip` 볼륨의 `/data/etc-zulip/zulip-secrets.conf`로 넣은 다음 위 1~6단계를 진행한다. `avatar_salt` 등 볼륨에만 있던 비밀값이 바뀌면 아바타·세션이 깨질 수 있다. 실제로 해본 적 없는 절차이므로 시험 환경에서 먼저 확인한다.
-- Zulip 이미지에는 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 매일 03:30 UTC, `pg_dump`만 `/data/backups`에 저장)도 있다. 이것은 같은 `zulip` 볼륨 안에 남으므로 볼륨이 사라지면 함께 사라진다. 호스트에 따로 두는 `ops/backup.ps1`과는 별개다. (운영 3계층 `compose.app.yaml`은 이 자동 백업을 끄고 `ops/backup.sh`로 일원화한다 — 아래 리눅스 절.)
+- Zulip 이미지에는 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 매일 03:30 UTC, `pg_dump`만 `/data/backups`에 저장)도 있다. 이것은 같은 `zulip` 볼륨 안에 남으므로 볼륨이 사라지면 함께 사라진다. 호스트에 따로 두는 `ops/backup.ps1`과는 별개다. (운영 compose `compose.was-db.yaml`·`compose.app.yaml`은 이 자동 백업을 끄고 `ops/backup.sh`로 일원화한다 — 아래 리눅스 절.)
 
 ## 작업 스케줄러로 매일 새벽 실행 (예시, 자동 등록하지 않음)
 
@@ -112,8 +112,12 @@ Unregister-ScheduledTask -TaskName 'SangsangTalk Zulip Backup' -Confirm:$false
 
 # 리눅스(폐쇄망 운영) 백업·복원
 
-3계층 구성(`ops/compose/compose.app.yaml` = [앱], `ops/compose/compose.db.yaml` = [DB], 웹 서버 = [웹])을 기준으로 한다.
+기본 운영은 **2대 구성**이다: ② WAS·DB 서버(`ops/compose/compose.was-db.yaml`, Zulip과 PostgreSQL이 한 compose)와 ① 웹 서버.
+아래에서 **[앱]은 ② 서버**, **[웹]은 ① 서버**로 읽고, compose 파일은 `ops/compose/compose.was-db.yaml`을 쓴다.
+3계층 구성(`compose.app.yaml` = [앱], `compose.db.yaml` = [DB])이면 [앱] 명령의 compose 파일만 `ops/compose/compose.app.yaml`로 바꾼다.
 저장소는 각 서버의 `/opt/sangsangtalk`, compose 환경파일은 `/etc/sangsangtalk/zulip.env`(권한 0600 root)로 가정한다.
+DB 접속은 44703·TLS(`verify-full`)이며, Zulip 컨테이너의 `PGSSLMODE`·`PGSSLROOTCERT` 환경변수와 libpq 기본 위치에 마운트한 CA
+(`/home/zulip/.postgresql/root.crt`, `/root/.postgresql/root.crt`) 덕분에 `manage.py backup`의 `pg_dump`와 아래 `pg_restore`도 같은 기준으로 접속한다(`ops/README.md` M10).
 
 **이 절의 명령은 모두 root 셸(`sudo -i`)에서 실행한다.** docker 명령과 0600 root 환경파일을 쓰기 때문이다.
 [웹] 서버의 쪽지 백업만 root 셸에서 `sudo -u sangsangtalk`으로 서비스 계정 권한으로 돌린다.
@@ -137,11 +141,11 @@ install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
 - 파일 권한: 스크립트가 `umask 077`로 만든다(백업에 `zulip-secrets.conf` 포함).
 - `--dry-run`: 컨테이너 실행 여부만 확인하고 할 일을 출력한다(백업·삭제·로그 기록 없음).
 
-[앱] 서버(Zulip 백업. DB는 원격이지만 `manage.py backup`이 `REMOTE_POSTGRES_HOST`로 `pg_dump` 한다):
+[앱] 서버(Zulip 백업. `manage.py backup`이 `REMOTE_POSTGRES_HOST`로 `pg_dump` 한다):
 
 ```bash
 /opt/sangsangtalk/ops/backup.sh \
-  --compose-file /opt/sangsangtalk/ops/compose/compose.app.yaml \
+  --compose-file /opt/sangsangtalk/ops/compose/compose.was-db.yaml \
   --env-file /etc/sangsangtalk/zulip.env
 ```
 
@@ -161,7 +165,7 @@ sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
 
 ```
 # 매일 03:30 (서버 현지 시각)
-30 3 * * * root /opt/sangsangtalk/ops/backup.sh --compose-file /opt/sangsangtalk/ops/compose/compose.app.yaml --env-file /etc/sangsangtalk/zulip.env >/dev/null 2>&1
+30 3 * * * root /opt/sangsangtalk/ops/backup.sh --compose-file /opt/sangsangtalk/ops/compose/compose.was-db.yaml --env-file /etc/sangsangtalk/zulip.env >/dev/null 2>&1
 ```
 
 `/etc/cron.d/sangsangtalk-notes-backup` ([웹] 서버):
@@ -177,21 +181,22 @@ sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
   마지막 줄이 `[WARN] 백업 완료 (…) — 경고: 쪽지 인덱스 사본 없음`이 된다(3계층 [앱] 서버에서는 정상).
 - 백업 폴더는 별도 저장소로 옮겨 보관한다(`ops/firewall.md` 6·7번).
 - docker-zulip 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 켜짐)은 `zulip` 볼륨 안 `/data/backups`에 지우지 않고 쌓이므로
-  `compose.app.yaml`에서 `AUTO_BACKUP_ENABLED: "False"`로 껐다. 운영 백업은 이 스크립트 하나로 한다(개발용 `compose.yaml`은 그대로 켜져 있음).
+  운영 compose(`compose.was-db.yaml`, `compose.app.yaml`)에서 `AUTO_BACKUP_ENABLED: "False"`로 껐다. 운영 백업은 이 스크립트 하나로 한다(개발용 `compose.yaml`은 그대로 켜져 있음).
 
 ## 복원 ([앱] 서버, 실행 중인 스택에 덮어쓰기)
 
 위 Windows 절차와 같은 단계를 리눅스 **root 셸**로 한다. **현재 데이터가 백업 시점으로 덮어써진다.** 먼저 지금 상태를 백업한다.
-[DB] 서버의 PostgreSQL은 켜 둔다(복원은 앱 컨테이너에서 원격 DB로 `pg_restore` 한다).
+PostgreSQL(`database` 서비스, 3계층이면 [DB] 서버)은 켜 둔다(복원은 zulip 컨테이너에서 DB로 `pg_restore` 한다).
 
 ```bash
 cd /opt/sangsangtalk
-C=(docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.app.yaml)
+CF=ops/compose/compose.was-db.yaml                      # 3계층 [앱] 서버면 ops/compose/compose.app.yaml
+C=(docker compose --env-file /etc/sangsangtalk/zulip.env -f "$CF")
 stamp=20261116-110146                                   # 복원할 백업 폴더 이름
 file=/var/backups/sangsangtalk/$stamp/zulip-backup-$stamp.tar.gz
 
 # 0) 지금 상태 백업
-ops/backup.sh --compose-file ops/compose/compose.app.yaml --env-file /etc/sangsangtalk/zulip.env
+ops/backup.sh --compose-file "$CF" --env-file /etc/sangsangtalk/zulip.env
 
 # 1) 백업 파일을 컨테이너로 복사하고 풀기
 "${C[@]}" exec -T zulip sh -c 'rm -rf /tmp/restore && mkdir -p /tmp/restore'
@@ -201,8 +206,8 @@ ops/backup.sh --compose-file ops/compose/compose.app.yaml --env-file /etc/sangsa
 # 2) Zulip 앱 서버 중지(컨테이너는 그대로)
 "${C[@]}" exec -T -u zulip zulip /home/zulip/deployments/current/scripts/stop-server
 
-# 3) 데이터베이스 복원(원격 DB. 컨테이너 환경변수 SETTING_REMOTE_POSTGRES_HOST/PORT 로 접속)
-"${C[@]}" exec -T zulip sh -c 'export PGPASSWORD="$(crudini --get /etc/zulip/zulip-secrets.conf secrets postgres_password)"; pg_restore -h "$SETTING_REMOTE_POSTGRES_HOST" -p "${SETTING_REMOTE_POSTGRES_PORT:-5432}" -U zulip -d zulip --clean --if-exists /tmp/restore/zulip-backup/database'
+# 3) 데이터베이스 복원(컨테이너 환경변수 SETTING_REMOTE_POSTGRES_HOST/PORT, PGSSLMODE/PGSSLROOTCERT·/root/.postgresql/root.crt 로 TLS 검증 접속)
+"${C[@]}" exec -T zulip sh -c 'export PGPASSWORD="$(crudini --get /etc/zulip/zulip-secrets.conf secrets postgres_password)"; pg_restore -h "$SETTING_REMOTE_POSTGRES_HOST" -p "${SETTING_REMOTE_POSTGRES_PORT:-44703}" -U zulip -d zulip --clean --if-exists /tmp/restore/zulip-backup/database'
 
 # 4) 업로드 파일 복원
 "${C[@]}" exec -T zulip sh -c 'cp -a /tmp/restore/zulip-backup/uploads/. /data/uploads/ && chown -R zulip:zulip /data/uploads'
