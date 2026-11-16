@@ -14,6 +14,22 @@
         "design"
       ],
       "port": 43180
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "web/server.mjs"
+      ],
+      "port": 43123
+    },
+    {
+      "name": "ui-mock",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "web/dev/mock-server.mjs"
+      ],
+      "port": 43190
     }
   ]
 }

@@ -23,6 +23,24 @@ cd desktop; npm run build            # NSIS 설치파일 빌드
 - `node web/session-status.check.mjs` — Zulip 없이 세션 상태 API 계약을 검사한다.
 - Windows 빌드 절차와 사전 요구사항은 `BUILD.md`, CI는 `.github/workflows/windows.yml`.
 
+## 팀 운영
+사용자는 지시를 메인 세션(총괄 PM)에게만 한다. PM이 작업을 나누고, 결과를 검수하고, 커밋·푸시를 맡는다.
+에이전트 정의는 `.claude/agents/`에 있다.
+
+| 에이전트 | 범위 | 비고 |
+|---|---|---|
+| `frontend-dev` | `web/public/` | 시안(`design/`) 적용, 화면 상태·반응형 |
+| `backend-dev` | `web/server.mjs`, `web/lib/`, `compose.yaml` | Zulip API 연동. 응답 형태를 바꾸면 mock도 맞춤 |
+| `desktop-dev` | `desktop/`, `BUILD.md` | Tauri 트레이·자동 시작·알림, NSIS 빌드 |
+| `qa-tester` | 읽기·실행만 | 브라우저와 검사 스크립트로 확인, 재현 절차 보고 |
+| `reviewer` | 읽기만 | 커밋 전 diff 리뷰(버그·보안·규칙) |
+| 디자이너(사람) | `design/` | GitHub 브랜치/PR로 전달, 사용자가 완료를 알리면 적용 |
+
+- 같은 파일은 한 번에 한 에이전트만 고친다. 범위가 겹치는 작업은 순서대로 진행한다.
+- 큰 기능은 별도 세션으로, 조사·검증·리뷰는 서브에이전트로 맡긴다.
+- 흐름: 개발 → `qa-tester` 확인 → `reviewer` 리뷰 → PM이 커밋.
+- Zulip 없이 화면 확인: `node web/dev/mock-server.mjs` → http://127.0.0.1:43190 (launch.json `ui-mock`).
+
 ## 규칙
 - `.env`는 절대 커밋하지 않는다. 새 키를 추가하면 `.env.example`에도 빈 값으로 추가한다.
 - 포트 43123은 `web/server.mjs`와 `desktop/src-tauri/src/lib.rs`(APP_URL 등) 양쪽에 있으므로 함께 바꾼다.
