@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "design",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "43180",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "design"
+      ],
+      "port": 43180
+    }
+  ]
+}
