@@ -1,0 +1,154 @@
+# 상상톡 운영(폐쇄망) — [앱] 계층: Zulip + RabbitMQ + Redis + Memcached.
+# PostgreSQL은 [DB] 서버(ops/compose/compose.db.yaml)에 있고 5432로 접속한다.
+#
+# 실행(앱 서버에서, 저장소 루트 기준):
+#   docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.app.yaml up -d
+# --env-file을 주지 않으면 compose는 이 파일이 있는 ops/compose/.env를 읽는다.
+# 필요한 값(.env.example 참고): ZULIP__* 비밀값 6개, ZULIP_EXTERNAL_HOST, ZULIP_ADMINISTRATOR,
+# ZULIP_DB_HOST, ZULIP_APP_BIND_ADDRESS, (선택) ZULIP_DB_PORT, ZULIP_HTTPS_PORT.
+#
+# 프로젝트 이름을 개발용 compose.yaml과 같은 "sangsangtalk"으로 고정해
+# 볼륨 이름(sangsangtalk_zulip 등)과 비밀값 이름이 개발 환경과 같게 유지된다.
+#
+# TLS: CERTIFICATES=manual. 기관 인증서를 zulip 볼륨의
+#   /data/certs/manual/zulip.key, /data/certs/manual/zulip.combined-chain.crt 에 넣는다.
+# 웹 서버(상상톡 Node)는 ZULIP_ORIGIN=https://<ZULIP_EXTERNAL_HOST> 와 ZULIP_CA_FILE(기관 루트 CA)로 검증한다.
+#
+# 외부 접속 끄기(M6) 설정의 출처와 근거는 ops/README.md 참고.
+
+name: sangsangtalk
+
+secrets:
+  zulip__postgres_password:
+    environment: "ZULIP__POSTGRES_PASSWORD"
+  zulip__memcached_password:
+    environment: "ZULIP__MEMCACHED_PASSWORD"
+  zulip__rabbitmq_password:
+    environment: "ZULIP__RABBITMQ_PASSWORD"
+  zulip__redis_password:
+    environment: "ZULIP__REDIS_PASSWORD"
+  zulip__secret_key:
+    environment: "ZULIP__SECRET_KEY"
+  zulip__email_password:
+    environment: "ZULIP__EMAIL_PASSWORD"
+
+services:
+  memcached:
+    image: "memcached:alpine"
+    restart: unless-stopped
+    command:
+      - "sh"
+      - "-euc"
+      - |
+        echo 'mech_list: plain' > "$$SASL_CONF_PATH"
+        echo "zulip@$$HOSTNAME:$$(cat $$MEMCACHED_PASSWORD_FILE)" > "$$MEMCACHED_SASL_PWDB"
+        echo "zulip@localhost:$$(cat $$MEMCACHED_PASSWORD_FILE)" >> "$$MEMCACHED_SASL_PWDB"
+        exec memcached -S
+    secrets:
+      - zulip__memcached_password
+    environment:
+      SASL_CONF_PATH: "/home/memcache/memcached.conf"
+      MEMCACHED_SASL_PWDB: "/home/memcache/memcached-sasl-db"
+      MEMCACHED_PASSWORD_FILE: /run/secrets/zulip__memcached_password
+
+  rabbitmq:
+    image: "rabbitmq:4.2"
+    restart: unless-stopped
+    command:
+      - "sh"
+      - "-euc"
+      - |
+        export RABBITMQ_DEFAULT_PASS="$$(cat $$RABBITMQ_PASSWORD_FILE)"
+        echo "default_user = $$RABBITMQ_DEFAULT_USER" >> /etc/rabbitmq/rabbitmq.conf
+        echo "default_pass = $$RABBITMQ_DEFAULT_PASS" >> /etc/rabbitmq/rabbitmq.conf
+        exec docker-entrypoint.sh rabbitmq-server
+    secrets:
+      - zulip__rabbitmq_password
+    environment:
+      RABBITMQ_DEFAULT_USER: "zulip"
+      RABBITMQ_PASSWORD_FILE: /run/secrets/zulip__rabbitmq_password
+    volumes:
+      - "rabbitmq:/var/lib/rabbitmq:rw"
+
+  redis:
+    image: "redis:alpine"
+    restart: unless-stopped
+    command:
+      - "sh"
+      - "-euc"
+      - '/usr/local/bin/docker-entrypoint.sh --requirepass "$$(cat $$REDIS_PASSWORD_FILE)"'
+    secrets:
+      - zulip__redis_password
+    environment:
+      REDIS_PASSWORD_FILE: /run/secrets/zulip__redis_password
+    volumes:
+      - "redis:/data:rw"
+
+  zulip:
+    image: "ghcr.io/zulip/zulip-server:12.3-0"
+    restart: unless-stopped
+    ports:
+      # 웹 서버(상상톡 Node)와 관리 PC만 접근하도록 방화벽으로 제한한다(ops/firewall.md).
+      # ZULIP_APP_BIND_ADDRESS: 이 앱 서버의 내부 IP(웹 서버·관리 PC와 통하는 NIC). 0.0.0.0 대신 명시한다.
+      - "${ZULIP_APP_BIND_ADDRESS:?ZULIP_APP_BIND_ADDRESS (앱 서버 내부 IP, 예 10.0.20.10)를 지정하세요}:${ZULIP_HTTPS_PORT:-443}:443"
+    secrets:
+      - zulip__postgres_password
+      - zulip__memcached_password
+      - zulip__rabbitmq_password
+      - zulip__redis_password
+      - zulip__secret_key
+      - zulip__email_password
+    environment:
+      # --- 서비스 위치 ---
+      SETTING_REMOTE_POSTGRES_HOST: "${ZULIP_DB_HOST:?ZULIP_DB_HOST (DB 서버 주소)를 지정하세요}"
+      SETTING_REMOTE_POSTGRES_PORT: "${ZULIP_DB_PORT:-5432}"
+      SETTING_MEMCACHED_LOCATION: "memcached:11211"
+      SETTING_RABBITMQ_HOST: "rabbitmq"
+      SETTING_REDIS_HOST: "redis"
+      SETTING_EXTERNAL_HOST: "${ZULIP_EXTERNAL_HOST:?ZULIP_EXTERNAL_HOST (예 zulip.eumseong.local)를 지정하세요}"
+      SETTING_ZULIP_ADMINISTRATOR: "${ZULIP_ADMINISTRATOR:?ZULIP_ADMINISTRATOR (관리자 이메일)를 지정하세요}"
+      CERTIFICATES: "manual"
+      CONFIG_application_server__queue_workers_multiprocess: "false"
+      # 이미지 자체 자동 백업(매일 pg_dump를 zulip 볼륨 /data/backups에 쌓고 지우지 않음)을 끄고
+      # ops/backup.sh(보관 일수·로그·볼륨 밖 저장)로 일원화한다.
+      AUTO_BACKUP_ENABLED: "False"
+
+      # --- M6: 폐쇄망 외부 접속 끄기 (근거·출처: ops/README.md) ---
+      # docker-zulip 12.3 entrypoint: "True"/"False"/"None"은 파이썬 값으로, 빈 값은 무시된다.
+      # 모바일 푸시 bouncer·사용 통계·보안 알림(push.zulipchat.com) 전부 끔
+      SETTING_ZULIP_SERVICES_URL: "None"
+      SETTING_ZULIP_SERVICE_PUSH_NOTIFICATIONS: "False"
+      SETTING_ZULIP_SERVICE_SUBMIT_USAGE_STATISTICS: "False"
+      SETTING_ZULIP_SERVICE_SECURITY_ALERTS: "False"
+      # 기본 아바타를 gravatar.com에서 가져오지 않음
+      SETTING_ENABLE_GRAVATAR: "False"
+      # 메시지 속 웹 링크 미리보기(외부 사이트 접속) 끔
+      SETTING_INLINE_URL_EMBED_PREVIEW: "False"
+      # 화상회의 기본값 meet.jit.si 끔
+      SETTING_JITSI_SERVER_URL: "None"
+      # 새 사용자 안내 영상(static.zulipchat.com) 끔
+      SETTING_NAVIGATION_TOUR_VIDEO_URL: "None"
+      # 후원 안내 링크(외부 사이트) 숨김
+      SETTING_PROMOTE_SPONSORING_ZULIP: "False"
+      # 이메일: EMAIL_HOST를 주지 않으면 Zulip은 dummy 백엔드를 써서 메일을 보내지 않는다(외부 접속 없음).
+      # 내부 SMTP 릴레이가 생기면 아래를 채우고 ZULIP__EMAIL_PASSWORD를 설정한다.
+      # SETTING_EMAIL_HOST: "smtp.eumseong.local"
+      # SETTING_EMAIL_HOST_USER: "zulip@eumseong.local"
+      # SETTING_EMAIL_PORT: "587"
+      # SETTING_EMAIL_USE_TLS: "True"
+      # SETTING_NOREPLY_EMAIL_ADDRESS: "noreply@eumseong.local"
+    volumes:
+      - "zulip:/data:rw"
+    ulimits:
+      nofile:
+        soft: 1000000
+        hard: 1048576
+    depends_on:
+      - memcached
+      - rabbitmq
+      - redis
+
+volumes:
+  zulip:
+  rabbitmq:
+  redis:

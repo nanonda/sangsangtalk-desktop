@@ -85,7 +85,7 @@ services:
     image: "ghcr.io/zulip/zulip-server:12.3-0"
     restart: unless-stopped
     ports:
-      - "9991:443"
+      - "${ZULIP_HTTPS_PORT:-9991}:443"
     secrets:
       - zulip__postgres_password
       - zulip__memcached_password
@@ -98,7 +98,7 @@ services:
       SETTING_MEMCACHED_LOCATION: "memcached:11211"
       SETTING_RABBITMQ_HOST: "rabbitmq"
       SETTING_REDIS_HOST: "redis"
-      SETTING_EXTERNAL_HOST: "localhost.localdomain:9991"
+      SETTING_EXTERNAL_HOST: "${ZULIP_EXTERNAL_HOST:-localhost.localdomain:9991}"
       SETTING_ZULIP_ADMINISTRATOR: "admin@localhost.localdomain"
       CERTIFICATES: "self-signed"
       CONFIG_application_server__queue_workers_multiprocess: "false"

@@ -1,3 +1,6 @@
 * text=auto
 *.png binary
 *.ico binary
+# Keep team/agent settings out of offline bundles (git archive)
+.claude/ export-ignore
+*.sh text eol=lf

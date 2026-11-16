@@ -1,0 +1,39 @@
+# 상상톡 운영(폐쇄망) — [DB] 계층: PostgreSQL 14만.
+#
+# 실행(DB 서버에서, 저장소 루트 기준):
+#   docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.db.yaml up -d
+# 필요한 값: ZULIP__POSTGRES_PASSWORD (앱 서버와 같은 값), ZULIP_DB_BIND_ADDRESS (DB 서버 내부 IP).
+#
+# 프로젝트 이름 "sangsangtalk" → 볼륨 이름 sangsangtalk_postgresql-14 (개발용 compose.yaml과 같음).
+#
+# !! 5432는 [앱] 서버에서만 접속할 수 있어야 한다. !!
+#   - 호스트 방화벽에서 5432를 앱 서버 IP에만 허용한다(ops/firewall.md).
+#     주의: Docker가 publish한 포트는 ufw/firewalld의 INPUT 규칙을 우회할 수 있으므로
+#     ZULIP_DB_BIND_ADDRESS로 내부 NIC 주소에만 바인딩하고, DOCKER-USER 체인(IPv4·IPv6)으로 앱 서버 IP만 허용한다.
+#   - DB 서버 자체에서도 pg_hba.conf로 앱 서버 IP만 허용하는 것을 권장한다(이미지 기본은 비밀번호 인증으로 전체 허용).
+#   - 앱↔DB 구간 TLS: 이 이미지는 기본으로 PostgreSQL TLS를 켜지 않는다(확인 필요). 앱은 sslmode=prefer.
+
+name: sangsangtalk
+
+secrets:
+  zulip__postgres_password:
+    environment: "ZULIP__POSTGRES_PASSWORD"
+
+services:
+  database:
+    image: "zulip/zulip-postgresql:14"
+    restart: unless-stopped
+    ports:
+      # ZULIP_DB_BIND_ADDRESS: 이 DB 서버의 내부 IP(앱 서버와 통하는 NIC, 예 10.0.30.10). 필수 — 0.0.0.0에 열지 않는다.
+      - "${ZULIP_DB_BIND_ADDRESS:?ZULIP_DB_BIND_ADDRESS (DB 서버 내부 IP, 예 10.0.30.10)를 지정하세요}:5432:5432"
+    secrets:
+      - zulip__postgres_password
+    environment:
+      POSTGRES_DB: "zulip"
+      POSTGRES_USER: "zulip"
+      POSTGRES_PASSWORD_FILE: /run/secrets/zulip__postgres_password
+    volumes:
+      - "postgresql-14:/var/lib/postgresql/data:rw"
+
+volumes:
+  postgresql-14:

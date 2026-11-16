@@ -74,7 +74,7 @@ Copy-Item "C:\SangsangTalk-backup\$stamp\notes.json" C:\SangsangTalk\web\data\no
 - 업로드 복원(4단계)은 백업 이후에 새로 올린 파일을 지우지 않는다(덮어쓰기·추가만 한다). DB에는 기록이 없는 파일이 남을 수 있으나 동작에는 지장이 없다.
 - 쪽지 인덱스(`notes.json`)는 반드시 같은 회차 폴더의 사본으로 되돌린다(7단계). 다른 회차의 것을 쓰면 메시지 ID가 맞지 않는다. 사본이 없는 회차(`backup.log`에 `[WARN] 쪽지 인덱스 파일이 없어 건너뜁니다`)라면 7단계를 건너뛴다.
 - **새 PC / 볼륨을 잃은 경우(미검증):** `.env`를 원래 값으로 복구한 뒤 `docker compose up -d`로 빈 스택을 띄우고, 백업의 `zulip-backup/settings/zulip-secrets.conf`를 `zulip` 볼륨의 `/data/etc-zulip/zulip-secrets.conf`로 넣은 다음 위 1~6단계를 진행한다. `avatar_salt` 등 볼륨에만 있던 비밀값이 바뀌면 아바타·세션이 깨질 수 있다. 실제로 해본 적 없는 절차이므로 시험 환경에서 먼저 확인한다.
-- Zulip 이미지에는 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 매일 03:30 UTC, `pg_dump`만 `/data/backups`에 저장)도 있다. 이것은 같은 `zulip` 볼륨 안에 남으므로 볼륨이 사라지면 함께 사라진다. 호스트에 따로 두는 `ops/backup.ps1`과는 별개다.
+- Zulip 이미지에는 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 매일 03:30 UTC, `pg_dump`만 `/data/backups`에 저장)도 있다. 이것은 같은 `zulip` 볼륨 안에 남으므로 볼륨이 사라지면 함께 사라진다. 호스트에 따로 두는 `ops/backup.ps1`과는 별개다. (운영 3계층 `compose.app.yaml`은 이 자동 백업을 끄고 `ops/backup.sh`로 일원화한다 — 아래 리눅스 절.)
 
 ## 작업 스케줄러로 매일 새벽 실행 (예시, 자동 등록하지 않음)
 
@@ -107,3 +107,121 @@ Unregister-ScheduledTask -TaskName 'SangsangTalk Zulip Backup' -Confirm:$false
 - `-StartWhenAvailable`: 새벽에 PC가 꺼져 있었으면 다음에 켜졌을 때 실행한다.
 - PC가 잠자기 상태면 실행되지 않는다. 깨워서 실행하려면 `New-ScheduledTaskSettingsSet -WakeToRun`을 더한다.
 - Docker Desktop이 아직 시작되지 않았으면 스크립트가 실패(종료 코드 1)하고 `backup.log`에 남긴다.
+
+---
+
+# 리눅스(폐쇄망 운영) 백업·복원
+
+3계층 구성(`ops/compose/compose.app.yaml` = [앱], `ops/compose/compose.db.yaml` = [DB], 웹 서버 = [웹])을 기준으로 한다.
+저장소는 각 서버의 `/opt/sangsangtalk`, compose 환경파일은 `/etc/sangsangtalk/zulip.env`(권한 0600 root)로 가정한다.
+
+**이 절의 명령은 모두 root 셸(`sudo -i`)에서 실행한다.** docker 명령과 0600 root 환경파일을 쓰기 때문이다.
+[웹] 서버의 쪽지 백업만 root 셸에서 `sudo -u sangsangtalk`으로 서비스 계정 권한으로 돌린다.
+
+백업 폴더 만들기(처음 한 번):
+
+```bash
+# [앱] 서버
+install -d -o root -g root -m 0700 /var/backups/sangsangtalk
+# [웹] 서버 (쪽지 백업은 sangsangtalk 계정이 쓴다)
+install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
+```
+
+## 백업: `ops/backup.sh`
+
+`ops/backup.ps1`과 같은 동작(`manage.py backup` → `docker compose cp` → tar 목록 검사 → 쪽지 인덱스 사본 → 보관 일수 지난 폴더 삭제 → 로그, 실패 시 종료 코드 1)을 bash로 한다.
+
+- 위치: `/var/backups/sangsangtalk/<yyyyMMdd-HHmmss>/zulip-backup-<yyyyMMdd-HHmmss>.tar.gz` (`--backup-root`)
+- 로그: `/var/backups/sangsangtalk/backup.log`
+- 보관: 30일(`--retention-days`), 이름이 `yyyyMMdd-HHmmss` 형식인 폴더만 지운다.
+- 파일 권한: 스크립트가 `umask 077`로 만든다(백업에 `zulip-secrets.conf` 포함).
+- `--dry-run`: 컨테이너 실행 여부만 확인하고 할 일을 출력한다(백업·삭제·로그 기록 없음).
+
+[앱] 서버(Zulip 백업. DB는 원격이지만 `manage.py backup`이 `REMOTE_POSTGRES_HOST`로 `pg_dump` 한다):
+
+```bash
+/opt/sangsangtalk/ops/backup.sh \
+  --compose-file /opt/sangsangtalk/ops/compose/compose.app.yaml \
+  --env-file /etc/sangsangtalk/zulip.env
+```
+
+3계층에서는 쪽지 인덱스(`web/data/notes.json`)가 [웹] 서버에 있으므로 [앱] 서버 실행에서는 `[WARN] 쪽지 인덱스 파일이 없어 건너뜁니다`가 정상이다.
+[웹] 서버에서는 같은 스크립트를 쪽지만 백업하도록 돌린다(같은 이름 규칙의 폴더에 `notes.json`만 생긴다):
+
+```bash
+sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
+  --backup-root /var/backups/sangsangtalk-web --notes-file /opt/sangsangtalk/web/data/notes.json
+```
+
+> 쪽지 인덱스는 Zulip 메시지 ID를 가리킨다. 복원할 때는 Zulip 백업과 **가장 가까운 시각**의 쪽지 사본을 쓴다. 두 cron을 같은 시각에 맞춘다.
+
+### cron 예시 (문서로만. 자동 등록하지 않음)
+
+`/etc/cron.d/sangsangtalk-backup` ([앱] 서버):
+
+```
+# 매일 03:30 (서버 현지 시각)
+30 3 * * * root /opt/sangsangtalk/ops/backup.sh --compose-file /opt/sangsangtalk/ops/compose/compose.app.yaml --env-file /etc/sangsangtalk/zulip.env >/dev/null 2>&1
+```
+
+`/etc/cron.d/sangsangtalk-notes-backup` ([웹] 서버):
+
+```
+30 3 * * * sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only --backup-root /var/backups/sangsangtalk-web --notes-file /opt/sangsangtalk/web/data/notes.json >/dev/null 2>&1
+```
+
+- 결과는 `backup.log`의 마지막 줄(`백업 완료` 또는 `[ERROR] 백업 실패`)로 확인한다. 감시 도구가 있으면 종료 코드나 로그를 본다.
+- `--notes-only`의 백업 폴더(`/var/backups/sangsangtalk-web`)는 `sangsangtalk` 계정이 쓸 수 있어야 한다(위 `install -d`).
+  systemd 유닛의 `ReadWritePaths`는 서비스에만 적용되므로 cron에는 영향이 없다.
+- `--notes-only`는 쪽지 인덱스를 복사하지 못하면 `[ERROR] 백업 실패`, 종료 코드 1이다. 전체 백업에서는 경고만 남기고
+  마지막 줄이 `[WARN] 백업 완료 (…) — 경고: 쪽지 인덱스 사본 없음`이 된다(3계층 [앱] 서버에서는 정상).
+- 백업 폴더는 별도 저장소로 옮겨 보관한다(`ops/firewall.md` 6·7번).
+- docker-zulip 자체 자동 백업(`AUTO_BACKUP_ENABLED`, 기본 켜짐)은 `zulip` 볼륨 안 `/data/backups`에 지우지 않고 쌓이므로
+  `compose.app.yaml`에서 `AUTO_BACKUP_ENABLED: "False"`로 껐다. 운영 백업은 이 스크립트 하나로 한다(개발용 `compose.yaml`은 그대로 켜져 있음).
+
+## 복원 ([앱] 서버, 실행 중인 스택에 덮어쓰기)
+
+위 Windows 절차와 같은 단계를 리눅스 **root 셸**로 한다. **현재 데이터가 백업 시점으로 덮어써진다.** 먼저 지금 상태를 백업한다.
+[DB] 서버의 PostgreSQL은 켜 둔다(복원은 앱 컨테이너에서 원격 DB로 `pg_restore` 한다).
+
+```bash
+cd /opt/sangsangtalk
+C=(docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.app.yaml)
+stamp=20261116-110146                                   # 복원할 백업 폴더 이름
+file=/var/backups/sangsangtalk/$stamp/zulip-backup-$stamp.tar.gz
+
+# 0) 지금 상태 백업
+ops/backup.sh --compose-file ops/compose/compose.app.yaml --env-file /etc/sangsangtalk/zulip.env
+
+# 1) 백업 파일을 컨테이너로 복사하고 풀기
+"${C[@]}" exec -T zulip sh -c 'rm -rf /tmp/restore && mkdir -p /tmp/restore'
+"${C[@]}" cp "$file" zulip:/tmp/restore/backup.tar.gz
+"${C[@]}" exec -T zulip tar -xzf /tmp/restore/backup.tar.gz -C /tmp/restore
+
+# 2) Zulip 앱 서버 중지(컨테이너는 그대로)
+"${C[@]}" exec -T -u zulip zulip /home/zulip/deployments/current/scripts/stop-server
+
+# 3) 데이터베이스 복원(원격 DB. 컨테이너 환경변수 SETTING_REMOTE_POSTGRES_HOST/PORT 로 접속)
+"${C[@]}" exec -T zulip sh -c 'export PGPASSWORD="$(crudini --get /etc/zulip/zulip-secrets.conf secrets postgres_password)"; pg_restore -h "$SETTING_REMOTE_POSTGRES_HOST" -p "${SETTING_REMOTE_POSTGRES_PORT:-5432}" -U zulip -d zulip --clean --if-exists /tmp/restore/zulip-backup/database'
+
+# 4) 업로드 파일 복원
+"${C[@]}" exec -T zulip sh -c 'cp -a /tmp/restore/zulip-backup/uploads/. /data/uploads/ && chown -R zulip:zulip /data/uploads'
+
+# 5) 캐시 비우고 서버 시작
+"${C[@]}" exec -T -u zulip zulip /home/zulip/deployments/current/scripts/setup/flush-memcached
+"${C[@]}" exec -T -u zulip zulip /home/zulip/deployments/current/scripts/start-server
+
+# 6) 임시 파일 정리
+"${C[@]}" exec -T zulip rm -rf /tmp/restore
+```
+
+7) 쪽지 인덱스 되돌리기 ([웹] 서버, root 셸):
+
+```bash
+systemctl stop sangsangtalk-web
+install -o sangsangtalk -g sangsangtalk -m 0600 /var/backups/sangsangtalk-web/<가장 가까운 회차>/notes.json /opt/sangsangtalk/web/data/notes.json
+systemctl start sangsangtalk-web
+```
+
+확인: 관리 PC에서 `https://<ZULIP_EXTERNAL_HOST>` 로그인, 직원 PC 상상톡 앱에서 대화 목록·최근 메시지·첨부 열기.
+주의사항(설정 폴더는 복원하지 않음, 버전 일치, `--clean` 경고 등)은 위 Windows 절과 같다. 리눅스 복원 절차는 **아직 실제로 해 보지 않았다(미검증)** — 시험 환경에서 먼저 확인한다.

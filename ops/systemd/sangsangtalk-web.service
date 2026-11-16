@@ -1,0 +1,92 @@
+# 상상톡 웹 서버(Node, web/server.mjs) systemd 유닛 — [웹] 계층, nginx 뒤에서 127.0.0.1:43123만 듣는다.
+#
+# 설치(root 셸에서):
+#   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin sangsangtalk
+#   install -d -o root -g root -m 0755 /opt/sangsangtalk
+#   # 반입 패키지의 소스를 푼다. 압축 맨 위의 sangsangtalk-<커밋>/ 폴더를 벗겨 /opt/sangsangtalk 바로 아래에 둔다.
+#   tar -xzf source-<커밋>.tar.gz -C /opt/sangsangtalk --strip-components=1
+#   install -d -o sangsangtalk -g sangsangtalk -m 0700 /opt/sangsangtalk/web/data
+#   install -d -o root -g sangsangtalk -m 0750 /etc/sangsangtalk
+#   install -d -o root -g root         -m 0700 /etc/sangsangtalk/tls   # nginx 전용: 웹 인증서·개인키(키 0600 root)
+#   install -d -o root -g sangsangtalk -m 0750 /etc/sangsangtalk/ca    # Node가 읽는 기관 루트 CA
+#   install -o root -g sangsangtalk -m 0640 eumseong-root-ca.pem /etc/sangsangtalk/ca/eumseong-root-ca.pem
+#   install -o root -g sangsangtalk -m 0640 /dev/null /etc/sangsangtalk/web.env   # 아래 예시로 채운다
+#   cp /opt/sangsangtalk/ops/systemd/sangsangtalk-web.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now sangsangtalk-web
+#   systemctl status sangsangtalk-web ; journalctl -u sangsangtalk-web -f
+#
+# /etc/sangsangtalk/web.env 예시(KEY=VALUE, 따옴표 없이. SESSION_KEY 비밀값이 들어가므로 0640 root:sangsangtalk):
+#   HOST=127.0.0.1
+#   PORT=43123
+#   PUBLIC_ORIGIN=https://talk.eumseong.local
+#   SESSION_KEY=<openssl rand -base64 32 로 만든 32바이트 base64>
+#   ZULIP_ORIGIN=https://zulip.eumseong.local
+#   ZULIP_CA_FILE=/etc/sangsangtalk/ca/eumseong-root-ca.pem
+#   MAX_UPLOAD_MB=100
+#   # ZULIP_TLS_INSECURE=1 은 개발용. 운영에서는 쓰지 않는다.
+#
+# 주의:
+#   - Node는 OS 인증서 저장소가 아니라 자체 CA 목록을 쓴다. 기관 내부 CA로 발급한 Zulip 인증서를 검증하려면
+#     ZULIP_CA_FILE(권장) 또는 NODE_EXTRA_CA_CERTS=/etc/sangsangtalk/ca/eumseong-root-ca.pem 으로 CA를 준다.
+#     CA는 /etc/sangsangtalk/ca/(0750 root:sangsangtalk, 파일 0640)에 둔다. /etc/sangsangtalk/tls/(nginx 개인키)는 이 계정이 못 읽는다.
+#   - 설정 오류(잘못된 HOST·PORT·PUBLIC_ORIGIN·ZULIP_ORIGIN·ZULIP_CA_FILE·SESSION_KEY)면 서버가 한국어 오류를 남기고
+#     종료 코드 1로 끝난다. 실행 중 예외로 죽어도 1이므로 RestartPreventExitStatus 대신 시작 횟수 제한을 쓴다:
+#     60초 안에 5번 시작하면 더 이상 재시작하지 않고 failed가 된다. 고친 뒤 `systemctl reset-failed sangsangtalk-web` 후 시작.
+#   - 포트 43123을 바꾸면 ops/nginx/sangsangtalk.conf 의 upstream 도 함께 바꾼다.
+#   - MAX_UPLOAD_MB를 바꾸면 nginx 의 /api/files client_max_body_size 도 함께 바꾼다.
+#   - node 경로가 /usr/bin/node 가 아니면 ExecStart를 고친다(`command -v node`). Node 24 기준으로 개발했다.
+
+[Unit]
+Description=SangsangTalk web server (Zulip proxy)
+Documentation=file:///opt/sangsangtalk/ops/README.md
+After=network-online.target
+Wants=network-online.target
+# 설정 오류로 바로 죽는 경우 무한 재시작하지 않게: 60초 안에 5번 시작하면 멈춘다(RestartSec=5s와 함께).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sangsangtalk
+Group=sangsangtalk
+WorkingDirectory=/opt/sangsangtalk/web
+EnvironmentFile=/etc/sangsangtalk/web.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/sangsangtalk/web/server.mjs
+Restart=on-failure
+RestartSec=5s
+# 롱폴링(/api/events) 연결이 끊길 때까지 기다리지 않도록 종료 대기 시간을 짧게
+TimeoutStopSec=15s
+UMask=0077
+
+# --- 하드닝 ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+# 쓰기는 쪽지 인덱스·세션 파일 폴더만
+ReadWritePaths=/opt/sangsangtalk/web/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# 허용 목록 밖 시스템 호출은 프로세스를 죽이지 않고 EPERM으로 돌려준다
+SystemCallErrorNumber=EPERM
+# MemoryDenyWriteExecute=yes 는 V8 JIT와 충돌하므로 쓰지 않는다.
+
+[Install]
+WantedBy=multi-user.target
