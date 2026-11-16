@@ -24,21 +24,24 @@ cd desktop; npm run build            # NSIS 설치파일 빌드
 - Windows 빌드 절차와 사전 요구사항은 `BUILD.md`, CI는 `.github/workflows/windows.yml`.
 
 ## 팀 운영
-사용자는 지시를 메인 세션(총괄 PM)에게만 한다. PM이 작업을 나누고, 결과를 검수하고, 커밋·푸시를 맡는다.
-에이전트 정의는 `.claude/agents/`에 있다.
+사용자는 지시를 **총괄 PM** 세션에게만 한다. PM이 작업을 나누고, 결과를 검수하고, 커밋·푸시를 맡는다.
+상주 역할은 Code 탭의 세션(사이드바 그룹 "상상톡 팀")이고, 필요할 때 부르는 역할은 서브에이전트다.
+역할별 지침은 `.claude/agents/<에이전트>.md`에 있으며 세션도 같은 지침을 따른다.
 
-| 에이전트 | 범위 | 비고 |
-|---|---|---|
-| `frontend-dev` | `web/public/` | 시안(`design/`) 적용, 화면 상태·반응형 |
-| `backend-dev` | `web/server.mjs`, `web/lib/`, `compose.yaml` | Zulip API 연동. 응답 형태를 바꾸면 mock도 맞춤 |
-| `desktop-dev` | `desktop/`, `BUILD.md` | Tauri 트레이·자동 시작·알림, NSIS 빌드 |
-| `qa-tester` | 읽기·실행만 | 브라우저와 검사 스크립트로 확인, 재현 절차 보고 |
-| `reviewer` | 읽기만 | 커밋 전 diff 리뷰(버그·보안·규칙) |
-| 디자이너(사람) | `design/` | GitHub 브랜치/PR로 전달, 사용자가 완료를 알리면 적용 |
+| 역할 | 형태 | 에이전트 | 범위 |
+|---|---|---|---|
+| 총괄 PM | 세션 | — | 지시 접수, 분배, 검수, 커밋·푸시 |
+| 프론트엔드 개발 | 세션 | `frontend-dev` | `web/public/`, 시안 적용 |
+| 백엔드 개발 | 세션 | `backend-dev` | `web/server.mjs`, `web/lib/`, `compose.yaml`, `web/dev/mock-server.mjs` |
+| 데스크톱 개발 | 세션 | `desktop-dev` | `desktop/` |
+| 디자이너 | 세션 + 사람 | — | `design/`. 디자이너(사람)의 GitHub PR 접수, 구현과 시안 대조 |
+| 빌드·배포 | 서브에이전트 | `release-engineer` | `.github/workflows/`, `BUILD.md`, 버전 |
+| QA | 서브에이전트 | `qa-tester` | 읽기·실행만. 동작 확인과 재현 절차 |
+| 코드 리뷰 | 서브에이전트 | `reviewer` | 읽기만. 커밋 전 diff 리뷰 |
 
-- 같은 파일은 한 번에 한 에이전트만 고친다. 범위가 겹치는 작업은 순서대로 진행한다.
-- 큰 기능은 별도 세션으로, 조사·검증·리뷰는 서브에이전트로 맡긴다.
-- 흐름: 개발 → `qa-tester` 확인 → `reviewer` 리뷰 → PM이 커밋.
+- 모든 세션은 같은 작업 폴더(`C:\SangsangTalk`, `main`)를 쓴다. 자기 범위 밖 파일은 고치지 않고, 브랜치를 바꾸거나 커밋·푸시하지 않는다.
+- 범위 밖 변경이 필요하면 PM에게 보고하고, PM이 담당에게 넘긴다. 같은 파일은 한 번에 한 역할만 고친다.
+- 흐름: 개발 세션 작업 → `qa-tester` 확인 → `reviewer` 리뷰 → PM이 커밋·푸시.
 - Zulip 없이 화면 확인: `node web/dev/mock-server.mjs` → http://127.0.0.1:43190 (launch.json `ui-mock`).
 
 ## 규칙
