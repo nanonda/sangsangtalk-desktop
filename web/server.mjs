@@ -41,6 +41,9 @@ const PUBLIC_FILES = new Map([
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
   ["/favicon.svg", "favicon.svg"],
+  ["/assets/turtle-front.png", "assets/turtle-front.png"],
+  ["/assets/turtle-thumbs.png", "assets/turtle-thumbs.png"],
+  ["/assets/turtle-jump.png", "assets/turtle-jump.png"],
 ]);
 
 const TYPES = {
@@ -48,6 +51,7 @@ const TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
 
 function zulip(method, apiPath, { auth, form, timeoutMs = 20000, signal } = {}) {

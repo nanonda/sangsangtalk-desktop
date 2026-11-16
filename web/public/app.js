@@ -7,7 +7,7 @@ const state = {
   sendError: "",
   authBusy: false,
   pollToken: null,
-  view: "directory",
+  view: "talk",
   selectedUser: null,
   people: [],
   directoryLoading: false,
@@ -24,13 +24,38 @@ const state = {
   previewGeneration: 0,
   selectedNotePeer: null,
   noteFilter: "all",
+  talkFilter: "all",
+  query: "",
+  generalLast: null,
+  generalUnread: 0,
+  live: false,
 };
+
+const TURTLE = "/assets/turtle-front.png";
+const GENERAL_NAME = "general";
 
 let pollAbort = null;
 let personClickTimer = 0;
 let restoreChooserFocus = true;
 
 const $ = (selector) => document.querySelector(selector);
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function iconUse(id) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "i");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#${id}`);
+  svg.append(use);
+  return svg;
+}
 
 function setMode(mode) {
   document.body.classList.toggle("mode-chat", mode === "chat");
@@ -52,18 +77,23 @@ function setLoginError(message) {
 function setLive(message, isError) {
   const node = $("#live-status");
   if (!node) return;
-  node.textContent = message;
+  $("#live-text").textContent = message;
   node.classList.toggle("is-error", Boolean(isError));
+  state.live = !isError && message === "실시간";
+  const dot = $("#me-dot");
+  if (dot) dot.classList.toggle("off", !state.live);
+  const me = $("#me");
+  if (me && state.me) me.title = `${state.me.fullName || state.me.email} · ${state.live ? "온라인" : "연결 안 됨"}`;
 }
 
 function roleLabel(role) {
   return {
-    owner: "\uC18C\uC720\uC790",
-    admin: "\uAD00\uB9AC\uC790",
-    moderator: "\uC911\uC7AC\uC790",
-    guest: "\uC190\uB2D8",
-    member: "\uAD6C\uC131\uC6D0",
-  }[role] || "\uAD6C\uC131\uC6D0";
+    owner: "소유자",
+    admin: "관리자",
+    moderator: "중재자",
+    guest: "손님",
+    member: "구성원",
+  }[role] || "구성원";
 }
 
 function personTitle(person) {
@@ -71,16 +101,36 @@ function personTitle(person) {
   return title || roleLabel(person?.role);
 }
 
-function initial(name) {
-  const text = (name || "?").trim();
-  return [...text][0] || "?";
+function personById(userId) {
+  return state.people.find((person) => person.userId === userId) || null;
 }
 
-function avatarColor(name) {
-  const palette = ["#23473d", "#d84a2f", "#8a5a2b", "#3d5a80", "#6b3f69"];
-  let hash = 0;
-  for (const char of name || "?") hash = (hash + char.codePointAt(0)) % palette.length;
-  return palette[hash];
+/* 아바타: 프로필 사진이 있으면 사진, 없으면 거북이(시안 규칙). */
+function avatar(person, { small = false } = {}) {
+  const node = el("span", small ? "av sm" : "av");
+  node.setAttribute("aria-hidden", "true");
+  const img = document.createElement("img");
+  img.alt = "";
+  if (person?.avatarUrl) {
+    node.classList.add("photo");
+    img.src = person.avatarUrl;
+    img.addEventListener("error", () => {
+      node.classList.replace("photo", "turtle");
+      img.src = TURTLE;
+    }, { once: true });
+  } else {
+    node.classList.add("turtle");
+    img.src = TURTLE;
+  }
+  node.append(img);
+  return node;
+}
+
+function groupAvatar(small) {
+  const node = el("span", small ? "av sm group" : "av group");
+  node.setAttribute("aria-hidden", "true");
+  node.append(iconUse("ico-group"));
+  return node;
 }
 
 function formatTime(unix) {
@@ -88,17 +138,82 @@ function formatTime(unix) {
 }
 
 function formatDay(unix) {
-  return new Intl.DateTimeFormat("ko-KR", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    weekday: "short",
-  }).format(new Date(unix * 1000));
+  return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date(unix * 1000));
 }
 
 function dayKey(unix) {
   const date = new Date(unix * 1000);
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatListTime(unix) {
+  const date = new Date(unix * 1000);
+  const now = new Date();
+  if (dayKey(unix) === dayKey(now.getTime() / 1000)) return formatTime(unix);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (dayKey(unix) === dayKey(yesterday.getTime() / 1000)) return "어제";
+  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }).format(date);
+}
+
+function timeNode(unix, className) {
+  const time = el("time", className, formatTime(unix));
+  time.dateTime = new Date(unix * 1000).toISOString();
+  return time;
+}
+
+function loadingState(text) {
+  const wrap = el("div", "state");
+  wrap.append(el("p", "state-title", text));
+  return wrap;
+}
+function emptyState(text, detail) {
+  const wrap = el("div", "state");
+  wrap.append(el("p", "state-title", text));
+  if (detail) wrap.append(el("p", "", detail));
+  return wrap;
+}
+function errorState(text, retry) {
+  const wrap = el("div", "state");
+  wrap.append(el("p", "state-title", text));
+  const button = el("button", "button-primary", "다시 시도");
+  button.type = "button";
+  button.addEventListener("click", retry);
+  wrap.append(button);
+  return wrap;
+}
+
+/* ───────── 메시지 로그 ───────── */
+
+function messageRow(message, { mine, grouped, who, kindLabel }) {
+  const row = el("div", "msg");
+  if (mine) row.classList.add("mine");
+  if (grouped) row.classList.add("cont");
+  row.dataset.id = String(message.id);
+  if (!mine && !grouped) {
+    row.append(avatar(personById(message.senderId), { small: true }));
+  }
+  const body = el("div", "body");
+  if (!mine && !grouped) {
+    const name = el("span", "who", who);
+    const person = personById(message.senderId);
+    if (person) name.append(el("small", "", personTitle(person)));
+    body.append(name);
+  }
+  const line = el("div", "row");
+  const bubble = el("div", "bubble", message.content);
+  const stamp = el("span", "stamp");
+  if (kindLabel) stamp.append(el("span", "kind", kindLabel));
+  stamp.append(timeNode(message.timestamp));
+  line.append(bubble, stamp);
+  body.append(line);
+  row.append(body);
+  return row;
+}
+
+function dayDivider(unix) {
+  const wrap = el("div", "day");
+  wrap.append(el("span", "", formatDay(unix)));
+  return wrap;
 }
 
 function renderLog() {
@@ -107,325 +222,49 @@ function renderLog() {
 
   if (state.loadError) {
     log.dataset.state = "error";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = "\uBA54\uC2DC\uC9C0\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4";
-    const detail = document.createElement("p");
-    detail.textContent = state.loadError;
-    const retry = document.createElement("button");
-    retry.id = "retry";
-    retry.type = "button";
-    retry.className = "button-primary";
-    retry.textContent = "\uB2E4\uC2DC \uC2DC\uB3C4";
-    retry.addEventListener("click", () => loadMessages());
-    wrap.append(title, detail, retry);
+    const wrap = errorState("메시지를 불러오지 못했습니다", () => loadMessages());
+    wrap.querySelector("button").id = "retry";
+    wrap.insertBefore(el("p", "", state.loadError), wrap.lastChild);
     log.append(wrap);
     return;
   }
-
   if (state.loading) {
     log.dataset.state = "loading";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = "\uBA54\uC2DC\uC9C0\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\u2026";
-    wrap.append(title);
-    log.append(wrap);
+    log.append(loadingState("메시지를 불러오는 중…"));
     return;
   }
-
   if (state.messages.length === 0) {
     log.dataset.state = "empty";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = state.view === "dm"
-      ? "\uC544\uC9C1 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4"
-      : "\uC544\uC9C1 \uBA54\uC2DC\uC9C0\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4";
-    const detail = document.createElement("p");
-    detail.textContent = state.view === "dm"
-      ? "\uCCAB \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4 \uB300\uD654\uB97C \uC2DC\uC791\uD558\uC138\uC694."
-      : "\uCCAB \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4 \uB300\uD654\uB97C \uC2DC\uC791\uD558\uC138\uC694.";
-    wrap.append(title, detail);
-    log.append(wrap);
+    log.append(emptyState(state.view === "dm" ? "아직 대화가 없습니다" : "아직 메시지가 없습니다", "첫 메시지를 보내 대화를 시작하세요."));
     return;
   }
 
   log.dataset.state = "ready";
   let lastDay = "";
-  let lastTopic = "";
+  let lastTopic = null;
   let previous = null;
-
   for (const message of state.messages) {
     const day = dayKey(message.timestamp);
     if (day !== lastDay) {
-      const divider = document.createElement("p");
-      divider.className = "day";
-      divider.textContent = formatDay(message.timestamp);
-      log.append(divider);
+      log.append(dayDivider(message.timestamp));
       lastDay = day;
       previous = null;
     }
     if (state.view !== "dm" && message.topic !== lastTopic) {
-      const divider = document.createElement("p");
-      divider.className = "topic";
-      divider.textContent = message.topic ? `\uC8FC\uC81C \u00B7 ${message.topic}` : "\uC8FC\uC81C \uC5C6\uC74C";
-      log.append(divider);
+      log.append(el("p", "sys", message.topic ? `주제 · ${message.topic}` : "주제 없음"));
       lastTopic = message.topic;
       previous = null;
     }
-
     const mine = message.senderId === state.me.userId;
-    const grouped = previous
+    const grouped = Boolean(previous
       && previous.senderId === message.senderId
-      && message.timestamp - previous.timestamp < 300;
-
-    const row = document.createElement("article");
-    row.className = mine ? "row mine" : "row";
-    row.dataset.id = String(message.id);
-
-    const avatar = document.createElement("div");
-    avatar.className = grouped ? "avatar spacer" : "avatar";
-    avatar.style.background = avatarColor(message.senderName);
-    avatar.textContent = grouped ? "" : initial(message.senderName);
-    if (!grouped) avatar.title = message.senderName;
-
-    const bubble = document.createElement("div");
-    bubble.className = "bubble";
-    if (!grouped) {
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      if (!mine) {
-        const name = document.createElement("span");
-        name.className = "name";
-        name.textContent = message.senderName;
-        meta.append(name);
-      }
-      const time = document.createElement("time");
-      time.className = "time";
-      time.dateTime = new Date(message.timestamp * 1000).toISOString();
-      time.textContent = formatTime(message.timestamp);
-      meta.append(time);
-      bubble.append(meta);
-    }
-    const content = document.createElement("p");
-    content.className = "content";
-    content.textContent = message.content;
-    bubble.append(content);
-    row.append(avatar, bubble);
-    log.append(row);
+      && message.timestamp - previous.timestamp < 300);
+    log.append(messageRow(message, { mine, grouped, who: message.senderName }));
     previous = message;
   }
 }
 
-function turtleMarkup() {
-  return '<svg viewBox="0 0 64 64" aria-hidden="true"><ellipse cx="34" cy="46" rx="16" ry="13" fill="#3cb85a"/><ellipse cx="34" cy="48" rx="9.5" ry="8" fill="#f4fff6"/><path d="M16 38c-7 2-9 8-5 10 4 1 9-2 11-6" fill="#3cb85a"/><path d="M50 34c7 0 11 4 10 7-4 2-9 0-11-4" fill="#3cb85a"/><circle cx="30" cy="28" r="13" fill="#37b154"/><path d="M18 26c2-12 20-16 26-5-3-7-12-10-18-6-5 3-8 7-8 11z" fill="#2f7de0"/><ellipse cx="30" cy="17" rx="11" ry="6.2" fill="#3d86e4"/><circle cx="25.2" cy="27.2" r="1.5" fill="#17324d"/><circle cx="33.4" cy="27.2" r="1.5" fill="#17324d"/><path d="M24.6 33.2c2.2 2.2 6.4 2.2 8.6 0" fill="none" stroke="#17324d" stroke-width="1.4" stroke-linecap="round"/></svg>';
-}
-function visibleStaff() {
-  const query = (state.staffQuery || "").trim().toLowerCase();
-  if (!query) return state.people;
-  return state.people.filter((person) => {
-    const label = personTitle(person).toLowerCase();
-    return person.fullName.toLowerCase().includes(query) || label.includes(query);
-  });
-}
-function renderStaff() {
-  const list = $("#staff-list");
-  const count = $("#staff-count");
-  const status = $("#staff-status");
-  if (!list) return;
-  if (status) status.textContent = state.noteStatus || "";
-  const people = visibleStaff();
-  if (count) count.textContent = "전체 직원 (" + state.people.length + "명)";
-  list.replaceChildren();
-  if (state.directoryError) {
-    list.append(errorState(state.directoryError, () => loadDirectory()));
-    return;
-  }
-  if (state.directoryLoading) {
-    list.append(loadingState("직원 목록을 불러오는 중…"));
-    return;
-  }
-  if (people.length === 0) {
-    list.append(emptyState(state.people.length ? "검색 결과가 없습니다" : "다른 구성원이 없습니다"));
-    return;
-  }
-  for (const person of people) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "staff-row";
-    button.id = "person-" + person.userId;
-    button.setAttribute("aria-haspopup", "dialog");
-    button.setAttribute("aria-label", person.fullName + ", " + personTitle(person) + ", 대화 또는 쪽지");
-    const avatar = document.createElement("span");
-    avatar.className = "avatar turtle-avatar";
-    if (person.avatarUrl) {
-      const img = document.createElement("img");
-      img.alt = "";
-      img.src = person.avatarUrl;
-      avatar.append(img);
-    } else {
-      avatar.innerHTML = turtleMarkup();
-    }
-    const idline = document.createElement("span");
-    idline.className = "staff-idline";
-    const name = document.createElement("span");
-    name.className = "staff-name";
-    name.textContent = person.fullName;
-    const dept = document.createElement("span");
-    dept.className = "staff-dept";
-    dept.textContent = personTitle(person);
-    idline.append(name, dept);
-    const presence = document.createElement("span");
-    presence.className = "staff-status";
-    presence.textContent = "온라인";
-    button.append(avatar, idline, presence);
-    button.addEventListener("click", (event) => {
-      if (event.detail > 1) return;
-      if (event.detail === 0) {
-        openChooser(person);
-        return;
-      }
-      window.clearTimeout(personClickTimer);
-      personClickTimer = window.setTimeout(() => openChooser(person), 250);
-    });
-    button.addEventListener("dblclick", (event) => {
-      event.preventDefault();
-      window.clearTimeout(personClickTimer);
-      openChooser(person);
-    });
-    button.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      window.clearTimeout(personClickTimer);
-      openChooser(person);
-    });
-    list.append(button);
-  }
-}
-function renderDirectory() {
-  const root = $("#directory");
-  const list = $("#directory-list");
-  const status = $("#directory-status");
-  if (!root || !list || !status) return;
-  status.textContent = state.noteStatus || "";
-  list.replaceChildren();
-
-  if (state.directoryError) {
-    root.dataset.state = "error";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = "\uC870\uC9C1\uB3C4\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4";
-    const detail = document.createElement("p");
-    detail.textContent = state.directoryError;
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "button-primary";
-    retry.textContent = "\uB2E4\uC2DC \uC2DC\uB3C4";
-    retry.addEventListener("click", () => loadDirectory());
-    wrap.append(title, detail, retry);
-    list.append(wrap);
-    return;
-  }
-
-  if (state.directoryLoading) {
-    root.dataset.state = "loading";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = "\uC870\uC9C1\uB3C4\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\u2026";
-    wrap.append(title);
-    list.append(wrap);
-    return;
-  }
-
-  if (state.people.length === 0) {
-    root.dataset.state = "empty";
-    const wrap = document.createElement("div");
-    wrap.className = "state";
-    const title = document.createElement("p");
-    title.className = "state-title";
-    title.textContent = "\uB2E4\uB978 \uAD6C\uC131\uC6D0\uC774 \uC5C6\uC2B5\uB2C8\uB2E4";
-    wrap.append(title);
-    list.append(wrap);
-    return;
-  }
-
-  root.dataset.state = "ready";
-  for (const person of state.people) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "person";
-    button.id = `person-${person.userId}`;
-    button.dataset.userId = String(person.userId);
-    button.setAttribute("aria-haspopup", "dialog");
-    button.setAttribute("aria-label", `${person.fullName}, ${personTitle(person)}, \uB300\uD654 \uB610\uB294 \uCABD\uC9C0`);
-
-    const avatar = document.createElement("span");
-    avatar.className = "avatar";
-    avatar.setAttribute("aria-hidden", "true");
-    if (person.avatarUrl) {
-      avatar.classList.add("has-photo");
-      const img = document.createElement("img");
-      img.alt = "";
-      img.src = person.avatarUrl;
-      avatar.append(img);
-    } else {
-      avatar.style.background = avatarColor(person.fullName);
-      avatar.textContent = initial(person.fullName);
-    }
-
-    const text = document.createElement("span");
-    text.className = "person-text";
-    const name = document.createElement("span");
-    name.className = "person-name";
-    name.textContent = person.fullName;
-    const role = document.createElement("span");
-    role.className = "person-role";
-    role.textContent = personTitle(person);
-    text.append(name, role);
-    button.append(avatar, text);
-
-    button.addEventListener("click", (event) => {
-      if (event.detail > 1) return;
-      if (event.detail === 0) {
-        openChooser(person);
-        return;
-      }
-      window.clearTimeout(personClickTimer);
-      personClickTimer = window.setTimeout(() => openChooser(person), 250);
-    });
-    button.addEventListener("dblclick", (event) => {
-      event.preventDefault();
-      window.clearTimeout(personClickTimer);
-      openChooser(person);
-    });
-    button.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      window.clearTimeout(personClickTimer);
-      openChooser(person);
-    });
-    list.append(button);
-  }
-}
-
-function formatListTime(unix) {
-  const date = new Date(unix * 1000);
-  const now = new Date();
-  const sameDay = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
-  if (sameDay) return formatTime(unix);
-  return new Intl.DateTimeFormat("ko-KR", { month: "short", day: "numeric" }).format(date);
-}
+/* ───────── 목록: 대화 ───────── */
 
 function latestDm(personId) {
   const messages = state.dmCache[personId] || [];
@@ -435,6 +274,10 @@ function latestDm(personId) {
 function unreadCount(personId) {
   const seen = state.readCursor[personId] || 0;
   return (state.dmCache[personId] || []).filter((message) => message.senderId !== state.me?.userId && message.id > seen).length;
+}
+
+function totalUnread() {
+  return state.people.reduce((sum, person) => sum + unreadCount(person.userId), 0) + state.generalUnread;
 }
 
 function rememberDm(personId, messages, markRead) {
@@ -461,10 +304,32 @@ function absorbDmPreviews(messages) {
   }
 }
 
+function absorbChannelMessages(messages) {
+  const channel = messages.filter((message) => message && (message.kind || "channel") === "channel");
+  if (!channel.length) return;
+  const last = channel[channel.length - 1];
+  if (!state.generalLast || last.id > state.generalLast.id) state.generalLast = last;
+  if (state.view !== "general") {
+    state.generalUnread += channel.filter((message) => message.senderId !== state.me?.userId).length;
+  }
+}
+
 async function loadTalkPreviews() {
   const generation = ++state.previewGeneration;
   const people = state.people.slice();
-  await Promise.all(people.map(async (person) => {
+  const general = (async () => {
+    try {
+      const response = await fetch("/api/messages?" + new URLSearchParams({ view: "general" }));
+      if (!response.ok || generation !== state.previewGeneration) return;
+      const data = await response.json().catch(() => ({}));
+      const list = Array.isArray(data.messages) ? data.messages : [];
+      const last = list[list.length - 1];
+      if (last && (!state.generalLast || last.id > state.generalLast.id)) state.generalLast = last;
+    } catch {
+      // The general preview can stay blank.
+    }
+  })();
+  await Promise.all([general, ...people.map(async (person) => {
     try {
       const response = await fetch("/api/messages?" + new URLSearchParams({ view: "dm", userId: String(person.userId) }));
       if (!response.ok || generation !== state.previewGeneration) return;
@@ -474,86 +339,183 @@ async function loadTalkPreviews() {
     } catch {
       // A preview can stay blank until the next refresh.
     }
-  }));
-  if (generation === state.previewGeneration && (state.view === "talk" || state.view === "dm")) renderTalk();
+  })]);
+  if (generation === state.previewGeneration) renderList();
+}
+
+function matchesQuery(...texts) {
+  const query = state.query.trim().toLowerCase();
+  if (!query) return true;
+  return texts.some((text) => (text || "").toLowerCase().includes(query));
+}
+
+function roomButton({ avatarNode, name, sub, preview, unix, unread, current, onClick, label }) {
+  const button = el("button", "room");
+  button.type = "button";
+  if (current) button.setAttribute("aria-current", "true");
+  if (label) button.setAttribute("aria-label", label);
+  const text = el("span", "room-text");
+  const top = el("span", "t");
+  top.append(el("b", "", name));
+  if (sub) top.append(el("em", "", sub));
+  text.append(top, el("p", "", preview));
+  const meta = el("span", "meta");
+  if (unix) {
+    const time = el("time", "", formatListTime(unix));
+    time.dateTime = new Date(unix * 1000).toISOString();
+    meta.append(time);
+  }
+  if (unread > 0) meta.append(el("span", "badge", unread > 99 ? "99+" : String(unread)));
+  button.append(avatarNode, text, meta);
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function renderTalk() {
   const list = $("#talk-list");
-  const root = $("#talk");
-  if (!list || !root) return;
+  if (!list) return;
   list.replaceChildren();
+  updateUnreadBadges();
   if (state.directoryError || state.notesError) {
-    root.dataset.state = "error";
     list.append(errorState(state.notesError || state.directoryError, () => loadDirectory()));
     return;
   }
-  if (state.directoryLoading) {
-    root.dataset.state = "loading";
-    list.append(loadingState("대화함을 불러오는 중…"));
+  if (state.directoryLoading && state.people.length === 0) {
+    list.append(loadingState("대화 목록을 불러오는 중…"));
     return;
   }
-  if (state.people.length === 0) {
-    root.dataset.state = "empty";
-    list.append(emptyState("대화할 구성원이 없습니다"));
+
+  const filter = state.talkFilter;
+  const showGeneral = (filter === "all" || filter === "group" || (filter === "unread" && state.generalUnread > 0))
+    && matchesQuery(GENERAL_NAME, "전체", "채널");
+  const people = filter === "group" ? [] : state.people
+    .filter((person) => filter !== "unread" || unreadCount(person.userId) > 0)
+    .filter((person) => matchesQuery(person.fullName, personTitle(person)))
+    .sort((a, b) => (latestDm(b.userId)?.timestamp || 0) - (latestDm(a.userId)?.timestamp || 0) || a.fullName.localeCompare(b.fullName, "ko"));
+
+  if (!showGeneral && people.length === 0) {
+    list.append(emptyState(state.query ? "검색 결과가 없습니다" : filter === "unread" ? "읽지 않은 대화가 없습니다" : "대화할 구성원이 없습니다"));
     return;
   }
-  root.dataset.state = "ready";
-  for (const person of state.people) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "conv";
-    if (state.view === "dm" && state.selectedUser?.userId === person.userId) {
-      button.setAttribute("aria-current", "true");
+
+  if (showGeneral) {
+    const sec = el("div", "sec");
+    sec.append(iconUse("ico-pin"), "고정됨");
+    list.append(sec);
+    const last = state.generalLast;
+    list.append(roomButton({
+      avatarNode: groupAvatar(),
+      name: GENERAL_NAME,
+      sub: "전체 채널",
+      preview: last ? `${last.senderName}: ${last.content}` : "모든 구성원이 함께 쓰는 채널",
+      unix: last?.timestamp,
+      unread: state.generalUnread,
+      current: state.view === "general",
+      onClick: () => setView("general"),
+    }));
+  }
+  if (people.length) {
+    list.append(el("div", "sec", "최근 대화"));
+    for (const person of people) {
+      const last = latestDm(person.userId);
+      list.append(roomButton({
+        avatarNode: avatar(person),
+        name: person.fullName,
+        sub: personTitle(person),
+        preview: last ? last.content : "아직 대화가 없습니다",
+        unix: last?.timestamp,
+        unread: unreadCount(person.userId),
+        current: state.view === "dm" && state.selectedUser?.userId === person.userId,
+        onClick: () => openTalk(person),
+      }));
     }
-    const avatar = document.createElement("span");
-    avatar.className = "avatar";
-    avatar.style.background = avatarColor(person.fullName);
-    avatar.textContent = initial(person.fullName);
-    avatar.setAttribute("aria-hidden", "true");
-    const body = document.createElement("span");
-    body.className = "conv-body";
-    const top = document.createElement("span");
-    top.className = "conv-top";
-    const name = document.createElement("span");
-    name.className = "conv-name";
-    name.textContent = person.fullName;
-    const time = document.createElement("time");
-    time.className = "conv-time";
-    const last = latestDm(person.userId);
-    if (last) {
-      time.dateTime = new Date(last.timestamp * 1000).toISOString();
-      time.textContent = formatListTime(last.timestamp);
+  }
+}
+
+function updateUnreadBadges() {
+  const total = totalUnread();
+  const text = total > 99 ? "99+" : String(total);
+  const badge = $("#talk-badge");
+  if (badge) {
+    badge.hidden = total === 0;
+    badge.textContent = text;
+  }
+  const chip = $("#chip-unread");
+  if (chip) chip.textContent = total ? text : "";
+  const hour = new Date().getHours();
+  $("#hello-title").textContent = hour >= 5 && hour < 11 ? "좋은 아침이에요!" : hour >= 11 && hour < 18 ? "좋은 오후예요!" : "좋은 저녁이에요!";
+  const hello = $("#hello-text");
+  hello.replaceChildren();
+  if (total) {
+    hello.append("읽지 않은 대화가 ");
+    hello.append(el("strong", "", `${total}건`));
+    hello.append(" 있어요.");
+  } else {
+    hello.append("새 대화를 모두 확인했어요.");
+  }
+}
+
+/* ───────── 목록: 직원 ───────── */
+
+function bindPersonOpen(button, person) {
+  button.addEventListener("click", (event) => {
+    if (event.detail > 1) return;
+    if (event.detail === 0) {
+      openChooser(person);
+      return;
     }
-    top.append(name, time);
-    const bottom = document.createElement("span");
-    bottom.className = "conv-bottom";
-    const preview = document.createElement("span");
-    preview.className = "conv-preview";
-    preview.textContent = last ? last.content : "아직 대화가 없습니다";
-    bottom.append(preview);
-    const unread = unreadCount(person.userId);
-    if (unread > 0) {
-      const badge = document.createElement("span");
-      badge.className = "unread";
-      badge.textContent = unread > 99 ? "99+" : String(unread);
-      bottom.append(badge);
-    }
-    body.append(top, bottom);
-    button.append(avatar, body);
-    button.addEventListener("click", () => openTalk(person));
+    window.clearTimeout(personClickTimer);
+    personClickTimer = window.setTimeout(() => openChooser(person), 250);
+  });
+  button.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    window.clearTimeout(personClickTimer);
+    openChooser(person);
+  });
+}
+
+function renderStaff() {
+  const list = $("#staff-list");
+  if (!list) return;
+  list.replaceChildren();
+  if (state.directoryError) {
+    list.append(errorState(state.directoryError, () => loadDirectory()));
+    return;
+  }
+  if (state.directoryLoading && state.people.length === 0) {
+    list.append(loadingState("직원 목록을 불러오는 중…"));
+    return;
+  }
+  const people = state.people.filter((person) => matchesQuery(person.fullName, personTitle(person)));
+  if (people.length === 0) {
+    list.append(emptyState(state.people.length ? "검색 결과가 없습니다" : "다른 구성원이 없습니다"));
+    return;
+  }
+  list.append(el("div", "sec", `전체 직원 ${state.people.length}명`));
+  for (const person of people) {
+    const button = roomButton({
+      avatarNode: avatar(person),
+      name: person.fullName,
+      sub: "",
+      preview: personTitle(person),
+      onClick: () => {},
+      label: `${person.fullName}, ${personTitle(person)}, 대화 또는 쪽지`,
+    });
+    button.id = `person-${person.userId}`;
+    button.setAttribute("aria-haspopup", "dialog");
+    bindPersonOpen(button, person);
     list.append(button);
   }
 }
+
+/* ───────── 목록·대화창: 쪽지 ───────── */
 
 function noteGroups() {
   const groups = new Map();
   for (const message of state.noteMessages) {
     if (state.noteFilter !== "all" && message.direction !== state.noteFilter) continue;
     const id = message.peerId;
-    if (!groups.has(id)) {
-      groups.set(id, { userId: id, fullName: message.counterpartName || "쪽지", messages: [] });
-    }
+    if (!groups.has(id)) groups.set(id, { userId: id, fullName: message.counterpartName || "쪽지", messages: [] });
     groups.get(id).messages.push(message);
   }
   return [...groups.values()]
@@ -570,8 +532,7 @@ function renderNoteThread() {
   log.replaceChildren();
   const peer = state.selectedNotePeer;
   if (!peer) return;
-  const title = $("#channel-name");
-  if (title) title.textContent = peer.fullName || "쪽지";
+  updateHead();
   const messages = state.noteMessages
     .filter((message) => message.peerId === peer.userId)
     .filter((message) => state.noteFilter === "all" || message.direction === state.noteFilter)
@@ -580,30 +541,19 @@ function renderNoteThread() {
     log.append(emptyState("표시할 쪽지가 없습니다"));
     return;
   }
+  let lastDay = "";
   for (const message of messages) {
+    const day = dayKey(message.timestamp);
+    if (day !== lastDay) {
+      log.append(dayDivider(message.timestamp));
+      lastDay = day;
+    }
     const mine = message.direction === "sent" || message.senderId === state.me?.userId;
-    const row = document.createElement("article");
-    row.className = mine ? "row mine" : "row";
-    row.dataset.id = String(message.id);
-    const avatar = document.createElement("div");
-    avatar.className = "avatar";
-    avatar.style.background = avatarColor(message.counterpartName || message.senderName);
-    avatar.textContent = initial(mine ? state.me?.fullName : (message.counterpartName || message.senderName));
-    const bubble = document.createElement("div");
-    bubble.className = "bubble";
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const label = document.createElement("span");
-    label.textContent = mine ? "보낸 쪽지" : "받은 쪽지";
-    const time = document.createElement("time");
-    time.dateTime = new Date(message.timestamp * 1000).toISOString();
-    time.textContent = formatTime(message.timestamp);
-    meta.append(label, time);
-    const content = document.createElement("p");
-    content.className = "content";
-    content.textContent = message.content;
-    bubble.append(meta, content);
-    row.append(avatar, bubble);
+    const row = messageRow(
+      { ...message, senderId: mine ? state.me?.userId : message.peerId },
+      { mine, grouped: false, who: message.counterpartName || message.senderName, kindLabel: mine ? "보낸 쪽지" : "받은 쪽지" },
+    );
+    row.style.marginTop = "14px";
     log.append(row);
   }
   log.scrollTop = log.scrollHeight;
@@ -611,112 +561,64 @@ function renderNoteThread() {
 
 function renderNotes() {
   const list = $("#notes-list");
-  const root = $("#notes");
-  if (!list || !root) return;
+  if (!list) return;
   list.replaceChildren();
   if (state.loadError || state.notesError) {
-    root.dataset.state = "error";
     list.append(errorState(state.loadError || state.notesError, () => loadNotes()));
     renderNoteThread();
     return;
   }
   if (state.loading) {
-    root.dataset.state = "loading";
-    list.append(loadingState("메시지함을 불러오는 중…"));
+    list.append(loadingState("쪽지함을 불러오는 중…"));
     return;
   }
   const groups = noteGroups();
-  if (state.selectedNotePeer && !groups.some((group) => group.userId === state.selectedNotePeer.userId) && state.noteFilter !== "all") {
-    // Keep the open thread even when a filter hides its latest row.
-  } else if (state.selectedNotePeer && state.noteFilter === "all" && !state.noteMessages.some((message) => message.peerId === state.selectedNotePeer.userId)) {
+  if (state.selectedNotePeer && state.noteFilter === "all" && !state.noteMessages.some((message) => message.peerId === state.selectedNotePeer.userId)) {
     state.selectedNotePeer = null;
   }
-  if (groups.length === 0) {
-    root.dataset.state = "empty";
-    list.append(emptyState("아직 쪽지가 없습니다"));
-    renderNoteThread();
-    updateChrome();
-    return;
-  }
-  root.dataset.state = "ready";
-  for (const group of groups) {
-    const last = group.messages[group.messages.length - 1];
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "conv";
-    if (state.selectedNotePeer?.userId === group.userId) button.setAttribute("aria-current", "true");
-    const avatar = document.createElement("span");
-    avatar.className = "avatar";
-    avatar.style.background = avatarColor(group.fullName);
-    avatar.textContent = initial(group.fullName);
-    avatar.setAttribute("aria-hidden", "true");
-    const body = document.createElement("span");
-    body.className = "conv-body";
-    const top = document.createElement("span");
-    top.className = "conv-top";
-    const name = document.createElement("span");
-    name.className = "conv-name";
-    name.textContent = group.fullName;
-    const time = document.createElement("time");
-    time.className = "conv-time";
-    time.dateTime = new Date(last.timestamp * 1000).toISOString();
-    time.textContent = formatListTime(last.timestamp);
-    top.append(name, time);
-    const preview = document.createElement("span");
-    preview.className = "conv-preview";
-    preview.textContent = (last.direction === "sent" ? "보낸 쪽지 · " : "받은 쪽지 · ") + last.content;
-    body.append(top, preview);
-    button.append(avatar, body);
-    button.addEventListener("click", () => {
-      state.selectedNotePeer = { userId: group.userId, fullName: group.fullName };
-      renderNotes();
-    });
-    list.append(button);
+  const visible = groups.filter((group) => matchesQuery(group.fullName));
+  if (visible.length === 0) {
+    list.append(emptyState(groups.length ? "검색 결과가 없습니다" : "아직 쪽지가 없습니다", groups.length ? "" : "직원 목록에서 쪽지를 보낼 수 있어요."));
+  } else {
+    for (const group of visible) {
+      const last = group.messages[group.messages.length - 1];
+      list.append(roomButton({
+        avatarNode: avatar(personById(group.userId)),
+        name: group.fullName,
+        sub: `${group.messages.length}통`,
+        preview: (last.direction === "sent" ? "보냄 · " : "받음 · ") + last.content,
+        unix: last.timestamp,
+        current: state.selectedNotePeer?.userId === group.userId,
+        onClick: () => {
+          state.selectedNotePeer = { userId: group.userId, fullName: group.fullName };
+          renderNotes();
+          $("#note-thread-input")?.focus();
+        },
+      }));
+    }
   }
   renderNoteThread();
   updateChrome();
 }
 
-function loadingState(text) {
-  const wrap = document.createElement("div");
-  wrap.className = "state";
-  const title = document.createElement("p");
-  title.className = "state-title";
-  title.textContent = text;
-  wrap.append(title);
-  return wrap;
+function renderList() {
+  if (state.view === "home") renderStaff();
+  else if (state.view === "notes") renderNotes();
+  else renderTalk();
+  updateUnreadBadges();
+  const status = $("#list-status");
+  if (status) status.textContent = state.view === "home" ? state.noteStatus || "" : "";
 }
-function emptyState(text) {
-  const wrap = document.createElement("div");
-  wrap.className = "state";
-  const title = document.createElement("p");
-  title.className = "state-title";
-  title.textContent = text;
-  wrap.append(title);
-  return wrap;
-}
-function errorState(text, retry) {
-  const wrap = document.createElement("div");
-  wrap.className = "state";
-  const title = document.createElement("p");
-  title.className = "state-title";
-  title.textContent = text;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "button-primary";
-  button.textContent = "\uB2E4\uC2DC \uC2DC\uB3C4";
-  button.addEventListener("click", retry);
-  wrap.append(title, button);
-  return wrap;
-}
+
+/* ───────── 데이터 ───────── */
 
 function updateComposer() {
   const button = $("#send-button");
   const input = $("#composer-input");
   if (!button || !input) return;
-  button.disabled = state.sending;
+  button.disabled = state.sending || !input.value.trim();
   input.disabled = state.sending;
-  button.textContent = state.sending ? "보내는 중…" : "전송";
+  button.querySelector("span").textContent = state.sending ? "보내는 중…" : "전송";
   $("#send-error").textContent = state.sendError;
 }
 
@@ -738,46 +640,42 @@ function addMessages(incoming, { forceBottom = false } = {}) {
   if (stick) log.scrollTop = log.scrollHeight;
   if (state.view === "dm" && state.selectedUser) {
     rememberDm(state.selectedUser.userId, state.messages, true);
-    renderTalk();
   }
-}
-
-function paintPeople() {
-  if (state.view === "talk" || state.view === "dm") renderTalk();
-  else if (state.view === "home") renderStaff();
-  else if (state.view === "directory") renderDirectory();
+  if (state.view === "general") {
+    state.generalLast = state.messages[state.messages.length - 1];
+  }
+  renderList();
 }
 
 async function loadDirectory() {
   state.directoryLoading = true;
   state.directoryError = "";
-  paintPeople();
+  renderList();
   try {
     const response = await fetch("/api/directory");
     if (response.status === 401) {
-      showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+      showLogin("다시 로그인해 주세요.");
       return;
     }
     const data = await response.json().catch(() => ({}));
-    if (state.view !== "home" && state.view !== "directory" && state.view !== "talk") return;
     if (!response.ok) throw new Error(data.error || "directory");
     state.people = Array.isArray(data.people) ? data.people : [];
     state.directoryLoading = false;
-    paintPeople();
+    renderList();
     startPoll();
-    if (state.view === "talk" || state.view === "dm") loadTalkPreviews();
+    loadTalkPreviews();
   } catch {
-    if (state.view !== "home" && state.view !== "directory" && state.view !== "talk") return;
+    if (!state.me) return;
     state.directoryLoading = false;
-    state.directoryError = "\uC870\uC9C1\uB3C4\uB97C \uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
-    paintPeople();
+    state.directoryError = "직원 목록을 가져오지 못했습니다.";
+    renderList();
   }
 }
 
 async function loadMessages({ quiet = false } = {}) {
   const requestedView = state.view;
   const requestedUser = state.selectedUser?.userId || null;
-  if (requestedView === "home" || requestedView === "directory") {
+  if (requestedView !== "dm" && requestedView !== "general") {
     await loadDirectory();
     return;
   }
@@ -787,22 +685,22 @@ async function loadMessages({ quiet = false } = {}) {
     renderLog();
   }
   try {
-    const params = new URLSearchParams({ view: requestedView === "dm" ? "dm" : "general" });
+    const params = new URLSearchParams({ view: requestedView });
     if (requestedView === "dm") params.set("userId", String(requestedUser));
     const response = await fetch(`/api/messages?${params}`);
     if (response.status === 401) {
-      showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+      showLogin("다시 로그인해 주세요.");
       return;
     }
     const data = await response.json().catch(() => ({}));
     if (state.view !== requestedView || (requestedView === "dm" && state.selectedUser?.userId !== requestedUser)) return;
-    if (!response.ok) {
-      const failure = new Error(data.error || "load");
-      failure.status = response.status;
-      throw failure;
-    }
+    if (!response.ok) throw new Error(data.error || "load");
     state.messages = Array.isArray(data.messages) ? data.messages : [];
     if (requestedView === "dm" && requestedUser) rememberDm(requestedUser, state.messages, true);
+    if (requestedView === "general") {
+      state.generalUnread = 0;
+      if (state.messages.length) state.generalLast = state.messages[state.messages.length - 1];
+    }
     state.loading = false;
     state.loadError = "";
     const note = $("#history-note");
@@ -812,14 +710,12 @@ async function loadMessages({ quiet = false } = {}) {
     const stick = !quiet || distance < 160;
     renderLog();
     if (stick) log.scrollTop = log.scrollHeight;
-    if (requestedView === "dm") renderTalk();
+    renderList();
     startPoll();
-  } catch (error) {
+  } catch {
     if (state.view !== requestedView || (requestedView === "dm" && state.selectedUser?.userId !== requestedUser)) return;
     state.loading = false;
-    state.loadError = requestedView === "dm"
-      ? "\uB300\uD654\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."
-      : "\uCC44\uB110 \uBA54\uC2DC\uC9C0\uB97C \uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+    state.loadError = requestedView === "dm" ? "대화를 불러오지 못했습니다." : "채널 메시지를 가져오지 못했습니다.";
     renderLog();
   }
 }
@@ -850,36 +746,36 @@ function messageMatchesView(message) {
 async function pollLoop(token) {
   while (state.pollToken === token) {
     try {
-      setLive("\uC2E4\uC2DC\uAC04", false);
       pollAbort = new AbortController();
       const timeout = setTimeout(() => pollAbort.abort(), 70000);
       const response = await fetch("/api/events", { signal: pollAbort.signal });
       clearTimeout(timeout);
       if (state.pollToken !== token) return;
       if (response.status === 401) {
-        showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+        showLogin("다시 로그인해 주세요.");
         return;
       }
       const started = Date.now();
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "poll");
+      setLive("실시간", false);
       const incoming = Array.isArray(data.messages) ? data.messages : [];
       if (data.notesError) applyNotesError(data.error || "쪽지 기록을 읽지 못했습니다. 다시 시도하세요.");
       else applyNoteRecords(Array.isArray(data.notes) ? data.notes : []);
       const usable = data.notesError ? incoming.filter((message) => message.kind !== "dm") : incoming;
       absorbDmPreviews(usable);
-      if (state.view === "talk" || state.view === "dm") renderTalk();
+      absorbChannelMessages(usable);
       if (data.reset && !data.notesError) await loadMessages({ quiet: true });
       else if (state.view === "dm" || state.view === "general") {
         const visible = usable.filter(messageMatchesView);
         if (visible.length) addMessages(visible);
       }
-      setLive("\uC2E4\uC2DC\uAC04", false);
+      renderList();
       if (Date.now() - started < 800) await delay(800);
     } catch (error) {
       if (state.pollToken !== token) return;
       if (error.name !== "AbortError") {
-        setLive("\uC5F0\uACB0\uC774 \uC7A0\uC2DC \uB04A\uACBC\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uB294 \uC911\u2026", true);
+        setLive("연결이 잠시 끊겼습니다. 다시 시도하는 중…", true);
         await delay(1000);
       }
     }
@@ -949,7 +845,7 @@ async function loadNotes({ quiet = false } = {}) {
   try {
     const response = await fetch("/api/notes/messages");
     if (response.status === 401) {
-      showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+      showLogin("다시 로그인해 주세요.");
       return;
     }
     const data = await response.json().catch(() => ({}));
@@ -968,75 +864,95 @@ async function loadNotes({ quiet = false } = {}) {
     renderNotes();
   }
 }
-function markCurrent(selector, on) {
-  const node = document.querySelector(selector);
-  if (!node) return;
-  if (on) node.setAttribute("aria-current", "page");
-  else node.removeAttribute("aria-current");
+
+/* ───────── 화면 전환 ───────── */
+
+function updateHead() {
+  const title = $("#channel-name");
+  const kicker = $("#channel-kicker");
+  const slot = $("#chat-avatar");
+  const view = state.view;
+  let name = "대화";
+  let sub = "";
+  let node = null;
+  if (view === "dm" && state.selectedUser) {
+    name = state.selectedUser.fullName;
+    sub = personTitle(state.selectedUser);
+    node = avatar(personById(state.selectedUser.userId) || state.selectedUser);
+  } else if (view === "general") {
+    name = GENERAL_NAME;
+    sub = `전체 채널 · ${state.people.length + 1}명`;
+    node = groupAvatar();
+  } else if (view === "notes" && state.selectedNotePeer) {
+    name = state.selectedNotePeer.fullName;
+    sub = "쪽지";
+    node = avatar(personById(state.selectedNotePeer.userId));
+  } else if (view === "notes") {
+    name = "쪽지";
+  } else if (view === "home") {
+    name = "직원";
+  }
+  title.textContent = name;
+  kicker.textContent = sub;
+  slot.replaceChildren();
+  slot.hidden = !node;
+  if (node) {
+    slot.className = node.className;
+    slot.append(...node.childNodes);
+  }
 }
 
 function updateChrome() {
-  const home = state.view === "home";
-  const directory = state.view === "directory";
-  const talk = state.view === "talk";
-  const notes = state.view === "notes";
-  const dm = state.view === "dm";
-  const general = state.view === "general";
-  const noteOpen = notes && Boolean(state.selectedNotePeer);
-  const showLog = dm || general;
-  document.body.dataset.view = state.view;
-  const homePanel = $("#home");
-  const workPanel = $("#work");
-  if (homePanel) homePanel.hidden = !home;
-  if (workPanel) workPanel.hidden = home;
-  const orders = $("#rail-orders");
-  if (orders) {
-    if (home) orders.setAttribute("aria-current", "page");
-    else orders.removeAttribute("aria-current");
-  }
-  document.body.classList.toggle("show-thread", dm || general || noteOpen);
-  $("#directory").hidden = !directory;
-  $("#talk").hidden = !(talk || dm);
-  $("#notes").hidden = !notes;
+  const view = state.view;
+  const talkLike = view === "talk" || view === "dm" || view === "general";
+  const noteOpen = view === "notes" && Boolean(state.selectedNotePeer);
+  const showLog = view === "dm" || view === "general";
+  document.body.dataset.view = view;
+  document.body.classList.toggle("show-thread", showLog || noteOpen);
+
+  $("#list-title").textContent = view === "home" ? "직원" : view === "notes" ? "쪽지함" : "대화";
+  $("#list-search").placeholder = view === "home" ? "이름, 직책 검색" : view === "notes" ? "보낸 사람, 받는 사람 검색" : "대화방, 이름 검색";
+  $("#talk-chips").hidden = !talkLike;
+  $("#note-chips").hidden = view !== "notes";
+  $("#talk-list").hidden = !talkLike;
+  $("#staff-list").hidden = view !== "home";
+  $("#notes-list").hidden = view !== "notes";
+
   $("#log").hidden = !showLog;
   $("#composer").hidden = !showLog;
   $("#note-log").hidden = !noteOpen;
   $("#note-composer").hidden = !noteOpen;
-  const empty = $("#thread-empty");
-  if (empty) {
-    empty.hidden = showLog || noteOpen || directory || general || home;
-    empty.textContent = notes ? "쪽지를 선택하세요." : "왼쪽에서 대화를 선택하세요.";
-  }
-  const kicker = $("#channel-kicker");
-  if (kicker) kicker.textContent = directory ? "조직" : notes ? "메시지함" : general ? "채널" : "대화함";
-  const title = $("#channel-name");
-  if (title && !noteOpen) {
-    title.textContent = directory ? "조직도" : talk ? "대화함" : notes ? "메시지함" : dm ? (state.selectedUser?.fullName || "대화") : "general";
-  }
-  if ($("#log")) $("#log").setAttribute("aria-label", dm ? "대화" : "general 채널 메시지");
-  const input = $("#composer-input");
-  if (input) input.placeholder = "메시지를 입력하세요";
+  $("#thread-empty").hidden = showLog || noteOpen;
+  $("#thread-empty-text").textContent = view === "notes"
+    ? "왼쪽에서 쪽지를 선택하세요."
+    : view === "home" ? "직원을 눌러 대화나 쪽지를 시작하세요." : "왼쪽에서 대화를 선택하세요.";
+  $("#log").setAttribute("aria-label", view === "dm" ? "대화" : "general 채널 메시지");
   const history = $("#history-note");
   if (history && !showLog) history.hidden = true;
-  const back = $("#thread-back");
-  if (back) back.hidden = !(dm || noteOpen);
-  markCurrent("#rail-directory", directory);
-  markCurrent("#nav-directory", directory);
-  markCurrent("#rail-talk", talk || dm);
-  markCurrent("#nav-talk", talk || dm);
-  markCurrent("#rail-notes", notes);
-  markCurrent("#nav-notes", notes);
-  markCurrent("#rail-general", general);
-  markCurrent("#nav-general", general);
-  const peopleNav = $("#nav-people");
-  if (peopleNav) {
-    if (home) peopleNav.setAttribute("aria-current", "page");
-    else peopleNav.removeAttribute("aria-current");
+
+  const input = $("#composer-input");
+  if (input) {
+    input.placeholder = view === "dm" && state.selectedUser
+      ? `${state.selectedUser.fullName}님에게 메시지 보내기`
+      : view === "general" ? `${GENERAL_NAME}에 메시지 보내기` : "메시지를 입력하세요";
   }
+  const noteInput = $("#note-thread-input");
+  if (noteInput && state.selectedNotePeer) noteInput.placeholder = `${state.selectedNotePeer.fullName}님에게 쪽지 보내기`;
+
+  for (const [id, on] of [["#rail-talk", talkLike], ["#rail-people", view === "home"], ["#rail-notes", view === "notes"]]) {
+    const node = $(id);
+    if (on) node.setAttribute("aria-current", "page");
+    else node.removeAttribute("aria-current");
+  }
+  updateHead();
+}
+
+function listGroup(view) {
+  return view === "home" ? "home" : view === "notes" ? "notes" : "talk";
 }
 
 async function setView(view, person) {
-  if (!["home", "directory", "talk", "notes", "general", "dm"].includes(view)) return;
+  if (!["home", "talk", "notes", "general", "dm"].includes(view)) return;
   if (view === "dm") {
     if (person) state.selectedUser = person;
     if (!state.selectedUser) return;
@@ -1047,11 +963,17 @@ async function setView(view, person) {
     && !state.loadError;
   if (view === state.view && view !== "dm" && !state.loadError && !state.directoryError && !state.notesError) return;
   if (sameDm) return;
+  if (listGroup(view) !== listGroup(state.view)) {
+    state.query = "";
+    $("#list-search").value = "";
+  }
   state.view = view;
-  if (view !== "directory" && view !== "home") state.noteStatus = "";
+  if (view !== "home") state.noteStatus = "";
+  if (view === "general") state.generalUnread = 0;
   state.sendError = "";
+  updateComposer();
   updateChrome();
-  if (view === "home" || view === "directory" || view === "talk") {
+  if (view === "home" || view === "talk") {
     await loadDirectory();
     return;
   }
@@ -1059,6 +981,7 @@ async function setView(view, person) {
     await loadNotes();
     return;
   }
+  renderList();
   await loadMessages();
 }
 
@@ -1087,11 +1010,11 @@ function openNote(person) {
   if ($("#chooser").open) $("#chooser").close();
   state.noteUser = person;
   state.noteSending = false;
-  $("#note-target").textContent = person.fullName;
+  $("#note-target").textContent = `${person.fullName} · ${personTitle(person)}`;
   $("#note-input").value = "";
   $("#note-error").textContent = "";
   $("#note-send").disabled = false;
-  $("#note-send").textContent = "\uBCF4\uB0B4\uAE30";
+  $("#note-send").textContent = "보내기";
   $("#note-dialog").showModal();
   $("#note-input").focus();
 }
@@ -1106,16 +1029,21 @@ function showLogin(message) {
   }
   state.me = null;
   state.messages = [];
-  state.view = "directory";
+  state.view = "talk";
   state.selectedUser = null;
+  state.selectedNotePeer = null;
   state.people = [];
+  state.dmCache = {};
+  state.readCursor = {};
+  state.generalLast = null;
+  state.generalUnread = 0;
   state.sending = false;
   state.authBusy = false;
   state.noteStatus = "";
   setMode("login");
   setLoginError(message || "");
   $("#login-button").disabled = false;
-  $("#login-button").textContent = "\uB85C\uADF8\uC778";
+  $("#login-button").textContent = "로그인";
   $("#email").disabled = false;
   $("#password").disabled = false;
 }
@@ -1125,15 +1053,14 @@ function showChat() {
   state.selectedUser = null;
   state.selectedNotePeer = null;
   state.noteStatus = "";
+  state.view = "";
   $("#me-name").textContent = state.me.fullName || state.me.email;
-  const mail = $("#me-mail");
-  if (mail) mail.textContent = "온라인";
-  const avatar = $("#me-avatar");
-  if (avatar) avatar.innerHTML = turtleMarkup();
+  const pic = $("#me-avatar");
+  pic.classList.add("turtle");
   setLive("연결하는 중…", false);
   $("#send-error").textContent = "";
   startNotesWatch();
-  setView("home");
+  setView("talk");
 }
 
 async function boot() {
@@ -1146,9 +1073,11 @@ async function boot() {
     state.me = await response.json();
     showChat();
   } catch {
-    showLogin("\uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+    showLogin("서버에 연결하지 못했습니다.");
   }
 }
+
+/* ───────── 이벤트 ───────── */
 
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1156,13 +1085,13 @@ $("#login-form").addEventListener("submit", async (event) => {
   const email = $("#email").value.trim();
   const password = $("#password").value;
   if (!email || !password) {
-    setLoginError("\uC774\uBA54\uC77C\uACFC \uBE44\uBC00\uBC88\uD638\uB97C \uC785\uB825\uD558\uC138\uC694.");
+    setLoginError("이메일과 비밀번호를 입력하세요.");
     return;
   }
   state.authBusy = true;
   setLoginError("");
   $("#login-button").disabled = true;
-  $("#login-button").textContent = "\uB85C\uADF8\uC778 \uC911\u2026";
+  $("#login-button").textContent = "로그인 중…";
   $("#email").disabled = true;
   $("#password").disabled = true;
   try {
@@ -1173,9 +1102,9 @@ $("#login-form").addEventListener("submit", async (event) => {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setLoginError(data.error || "\uB85C\uADF8\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+      setLoginError(data.error || "로그인하지 못했습니다.");
       $("#login-button").disabled = false;
-      $("#login-button").textContent = "\uB85C\uADF8\uC778";
+      $("#login-button").textContent = "로그인";
       $("#email").disabled = false;
       $("#password").disabled = false;
       state.authBusy = false;
@@ -1186,9 +1115,9 @@ $("#login-form").addEventListener("submit", async (event) => {
     state.authBusy = false;
     showChat();
   } catch {
-    setLoginError("\uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+    setLoginError("서버에 연결하지 못했습니다.");
     $("#login-button").disabled = false;
-    $("#login-button").textContent = "\uB85C\uADF8\uC778";
+    $("#login-button").textContent = "로그인";
     $("#email").disabled = false;
     $("#password").disabled = false;
     state.authBusy = false;
@@ -1198,6 +1127,10 @@ $("#login-form").addEventListener("submit", async (event) => {
 for (const button of document.querySelectorAll("[data-view]")) {
   button.addEventListener("click", () => setView(button.dataset.view));
 }
+$("#new-talk").addEventListener("click", () => {
+  setView("home");
+  $("#list-search").focus();
+});
 
 $("#logout").addEventListener("click", async () => {
   stopPoll();
@@ -1209,24 +1142,52 @@ $("#logout").addEventListener("click", async () => {
   showLogin();
 });
 
+$("#list-search").addEventListener("input", (event) => {
+  state.query = event.currentTarget.value || "";
+  renderList();
+});
+
+for (const button of document.querySelectorAll("[data-talk-filter]")) {
+  button.addEventListener("click", () => {
+    state.talkFilter = button.dataset.talkFilter || "all";
+    for (const item of document.querySelectorAll("[data-talk-filter]")) {
+      item.setAttribute("aria-pressed", String(item === button));
+    }
+    renderTalk();
+  });
+}
+
+for (const button of document.querySelectorAll("[data-note-filter]")) {
+  button.addEventListener("click", () => {
+    state.noteFilter = button.dataset.noteFilter || "all";
+    for (const item of document.querySelectorAll("[data-note-filter]")) {
+      item.setAttribute("aria-pressed", String(item === button));
+    }
+    renderNotes();
+  });
+}
+
+function wireComposer(form, input, button) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+    button.disabled = !input.value.trim();
+  });
+}
+wireComposer($("#composer"), $("#composer-input"), $("#send-button"));
+wireComposer($("#note-composer"), $("#note-thread-input"), $("#note-thread-send"));
+
 $("#composer").addEventListener("submit", (event) => {
   event.preventDefault();
   const content = $("#composer-input").value.trim();
   if (!content || state.sending) return;
   sendMessage(content);
-});
-
-$("#composer-input").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    $("#composer").requestSubmit();
-  }
-});
-
-$("#composer-input").addEventListener("input", (event) => {
-  const field = event.currentTarget;
-  field.style.height = "auto";
-  field.style.height = `${Math.min(field.scrollHeight, 160)}px`;
 });
 
 $("#chooser").addEventListener("close", () => {
@@ -1236,7 +1197,7 @@ $("#chooser").addEventListener("close", () => {
     restoreChooserFocus = true;
     return;
   }
-  if (userId && (state.view === "directory" || state.view === "home")) document.getElementById("person-" + userId)?.focus();
+  if (userId && state.view === "home") document.getElementById(`person-${userId}`)?.focus();
 });
 
 $("#chooser-talk").addEventListener("click", () => {
@@ -1264,7 +1225,7 @@ $("#note-form").addEventListener("submit", async (event) => {
   if (!person || !content || state.noteSending) return;
   state.noteSending = true;
   $("#note-send").disabled = true;
-  $("#note-send").textContent = "\uBCF4\uB0B4\uB294 \uC911\u2026";
+  $("#note-send").textContent = "보내는 중…";
   $("#note-error").textContent = "";
   try {
     const response = await fetch("/api/messages", {
@@ -1274,26 +1235,25 @@ $("#note-form").addEventListener("submit", async (event) => {
     });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+      showLogin("다시 로그인해 주세요.");
       return;
     }
     if (!response.ok) {
-      $("#note-error").textContent = data.error || "\uCABD\uC9C0\uB97C \uBCF4\uB0B4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+      $("#note-error").textContent = data.error || "쪽지를 보내지 못했습니다.";
       return;
     }
-    state.noteStatus = `\uCABD\uC9C0\uB97C \uBCF4\uB0C8\uC2B5\uB2C8\uB2E4.`;
-    state.view = "home";
     if ($("#note-dialog").open) $("#note-dialog").close();
-    updateChrome();
-    await loadDirectory();
+    if (state.view !== "home") await setView("home");
+    state.noteStatus = `${person.fullName}님에게 쪽지를 보냈습니다.`;
+    renderList();
     document.getElementById(`person-${person.userId}`)?.focus();
   } catch {
-    $("#note-error").textContent = "\uCABD\uC9C0\uB97C \uBCF4\uB0B4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+    $("#note-error").textContent = "쪽지를 보내지 못했습니다.";
   } finally {
     state.noteSending = false;
     if ($("#note-dialog").open) {
       $("#note-send").disabled = false;
-      $("#note-send").textContent = "\uBCF4\uB0B4\uAE30";
+      $("#note-send").textContent = "보내기";
     }
   }
 });
@@ -1314,27 +1274,27 @@ async function sendMessage(content) {
     });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      showLogin("\uB2E4\uC2DC \uB85C\uADF8\uC778\uD574 \uC8FC\uC138\uC694.");
+      showLogin("다시 로그인해 주세요.");
       return;
     }
     if (!response.ok) {
-      state.sendError = data.error || "\uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+      state.sendError = data.error || "메시지를 보내지 못했습니다.";
       return;
     }
     $("#composer-input").value = "";
     $("#composer-input").style.height = "auto";
     if (data.message) addMessages([data.message], { forceBottom: true });
   } catch {
-    state.sendError = "\uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+    state.sendError = "메시지를 보내지 못했습니다.";
   } finally {
     state.sending = false;
     updateComposer();
-    if (state.me && state.view !== "directory") $("#composer-input").focus();
+    if (state.me && (state.view === "dm" || state.view === "general")) $("#composer-input").focus();
   }
 }
 
-$("#thread-back")?.addEventListener("click", () => {
-  if (state.view === "dm") setView("talk");
+$("#thread-back").addEventListener("click", () => {
+  if (state.view === "dm" || state.view === "general") setView("talk");
   else if (state.view === "notes") {
     state.selectedNotePeer = null;
     renderNotes();
@@ -1342,17 +1302,7 @@ $("#thread-back")?.addEventListener("click", () => {
   }
 });
 
-for (const button of document.querySelectorAll("[data-note-filter]")) {
-  button.addEventListener("click", () => {
-    state.noteFilter = button.dataset.noteFilter || "all";
-    for (const item of document.querySelectorAll("[data-note-filter]")) {
-      item.setAttribute("aria-pressed", String(item === button));
-    }
-    renderNotes();
-  });
-}
-
-$("#note-composer")?.addEventListener("submit", async (event) => {
+$("#note-composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   const person = state.selectedNotePeer;
   const input = $("#note-thread-input");
@@ -1377,19 +1327,15 @@ $("#note-composer")?.addEventListener("submit", async (event) => {
       return;
     }
     input.value = "";
+    input.style.height = "auto";
     await loadNotes({ quiet: true });
     renderNoteThread();
   } catch {
     $("#note-thread-error").textContent = "쪽지를 보내지 못했습니다.";
   } finally {
     state.noteSending = false;
-    if ($("#note-thread-send")) $("#note-thread-send").disabled = false;
+    $("#note-thread-send").disabled = !input?.value.trim();
   }
-});
-
-$("#staff-search")?.addEventListener("input", (event) => {
-  state.staffQuery = event.currentTarget.value || "";
-  if (state.view === "home") renderStaff();
 });
 
 boot();
