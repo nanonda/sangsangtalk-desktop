@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -16,9 +16,10 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use url::Url;
 
-const APP_URL: &str = "http://127.0.0.1:43123/";
+/// App address, fixed at build time from SANGSANGTALK_APP_URL (validated by build.rs;
+/// default http://127.0.0.1:43123/). Always an origin followed by `/`.
+const APP_URL: &str = env!("SANGSANGTALK_APP_URL");
 const OFFLINE_URL: &str = "http://sangsang.localhost/offline";
-const LINK_STATE_PATH: &str = r"C:\SangsangTalk\desktop\link-state.txt";
 
 // Windows sign-in at startup is off unless the tray item "시작 시 실행" is checked.
 // The autostart registration adds "--hidden" only after that item is enabled.
@@ -111,20 +112,17 @@ pub fn run() {
             let autostart_for_menu = autostart.clone();
 
             let hidden = std::env::args().any(|arg| arg == "--hidden");
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(APP_URL.parse().expect("app url")),
-            )
-            .title("상상톡")
-            .inner_size(1100.0, 760.0)
-            .min_inner_size(390.0, 560.0)
-            .center()
-            .visible(!hidden)
-            .on_navigation(|url| navigation_allowed(url))
-            .on_new_window(|_url, _features| NewWindowResponse::Deny)
-            .on_download(handle_download)
-            .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::External(app_url().clone()))
+                    .title("상상톡")
+                    .inner_size(1100.0, 760.0)
+                    .min_inner_size(390.0, 560.0)
+                    .center()
+                    .visible(!hidden)
+                    .on_navigation(|url| navigation_allowed(url))
+                    .on_new_window(|_url, _features| NewWindowResponse::Deny)
+                    .on_download(handle_download)
+                    .build()?;
             let _ = window.set_icon(png_icon(include_bytes!("../icons/128x128.png")));
 
             let watched = window.clone();
@@ -254,7 +252,21 @@ fn apply(app: &tauri::AppHandle, probed: LinkState) {
             }
         }
     }
-    let _ = std::fs::write(LINK_STATE_PATH, state_word(settled));
+    #[cfg(debug_assertions)]
+    write_link_state(app, settled);
+}
+
+/// Debug builds only: records the settled state as one word in
+/// `<app local data dir>\link-state.txt` (e.g. `%LOCALAPPDATA%\com.sangsangtalk.desktop`)
+/// for checking the tray logic during development. Failures are ignored.
+#[cfg(debug_assertions)]
+fn write_link_state(app: &tauri::AppHandle, state: LinkState) {
+    let Ok(dir) = app.path().app_local_data_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join("link-state.txt"), state_word(state));
+    }
 }
 
 fn settle(previous: Option<LinkState>, misses: &AtomicU8, probed: LinkState) -> LinkState {
@@ -291,8 +303,7 @@ fn session_cookie(app: &tauri::AppHandle) -> Result<Option<String>, ()> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(None);
     };
-    let url = APP_URL.parse().map_err(|_| ())?;
-    let cookies = window.cookies_for_url(url).map_err(|_| ())?;
+    let cookies = window.cookies_for_url(app_url().clone()).map_err(|_| ())?;
     let mut session = None;
     for cookie in cookies {
         if cookie.name() != "sangsang_sid" {
@@ -308,28 +319,66 @@ fn session_cookie(app: &tauri::AppHandle) -> Result<Option<String>, ()> {
 }
 
 fn request_signed_in(cookie: Option<&str>) -> Option<bool> {
-    let addr: SocketAddr = "127.0.0.1:43123".parse().ok()?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
-    let mut header = String::from(
+    let url = app_url();
+    let host = url.host_str()?;
+    let addrs = url.socket_addrs(|| None).ok()?;
+    let tcp = addrs
+        .iter()
+        .find_map(|addr| TcpStream::connect_timeout(addr, Duration::from_secs(2)).ok())?;
+    tcp.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    tcp.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+
+    // `Host` must match what the browser sends: host plus any non-default port.
+    let authority = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    let mut request = format!(
         "GET /api/session/status HTTP/1.1\r\n\
-         Host: 127.0.0.1:43123\r\n\
+         Host: {authority}\r\n\
          Connection: close\r\n\
          Accept: application/json\r\n\
-         User-Agent: SangsangTalkDesktop\r\n",
+         User-Agent: SangsangTalkDesktop\r\n"
     );
     if let Some(value) = cookie {
-        header.push_str("Cookie: sangsang_sid=");
-        header.push_str(value);
-        header.push_str("\r\n");
+        request.push_str("Cookie: sangsang_sid=");
+        request.push_str(value);
+        request.push_str("\r\n");
     }
-    header.push_str("\r\n");
-    stream.write_all(header.as_bytes()).ok()?;
-    drop(header);
+    request.push_str("\r\n");
 
+    let received = if url.scheme() == "https" {
+        exchange(tls_connect(host, tcp)?, request)?
+    } else {
+        exchange(tcp, request)?
+    };
+    let text = String::from_utf8_lossy(&received);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let status = head.lines().next().unwrap_or("");
+    if !(status.starts_with("HTTP/1.1 200") || status.starts_with("HTTP/1.0 200")) {
+        return status.starts_with("HTTP/").then_some(false);
+    }
+    Some(body.contains("\"signedIn\":true"))
+}
+
+/// TLS through SChannel, which validates the server certificate against the Windows
+/// certificate store (so an internal root CA deployed to the PC is trusted, same as
+/// WebView2). Any certificate or handshake failure counts as "server unreachable".
+#[cfg(windows)]
+fn tls_connect(host: &str, tcp: TcpStream) -> Option<native_tls::TlsStream<TcpStream>> {
+    let connector = native_tls::TlsConnector::new().ok()?;
+    connector.connect(host, tcp).ok()
+}
+
+#[cfg(not(windows))]
+fn tls_connect(_host: &str, _tcp: TcpStream) -> Option<TcpStream> {
+    None
+}
+
+/// Sends the request and reads up to ~4 KiB of the response (the status reply is tiny).
+fn exchange<S: Read + Write>(mut stream: S, request: String) -> Option<Vec<u8>> {
+    stream.write_all(request.as_bytes()).ok()?;
+    drop(request);
     let mut received = Vec::new();
     let mut buffer = [0u8; 1024];
     loop {
@@ -347,22 +396,21 @@ fn request_signed_in(cookie: Option<&str>) -> Option<bool> {
             {
                 break;
             }
+            // A TLS peer that closes without close_notify still delivered the reply.
+            Err(_) if !received.is_empty() => break,
             Err(_) => return None,
         }
     }
-    let text = String::from_utf8_lossy(&received);
-    let (head, body) = text.split_once("\r\n\r\n")?;
-    let status = head.lines().next().unwrap_or("");
-    if !(status.starts_with("HTTP/1.1 200") || status.starts_with("HTTP/1.0 200")) {
-        return status.starts_with("HTTP/").then_some(false);
-    }
-    Some(body.contains("\"signedIn\":true"))
+    Some(received)
 }
 
 fn navigate_app(window: &WebviewWindow) {
-    if let Ok(url) = APP_URL.parse() {
-        let _ = window.navigate(url);
-    }
+    let _ = window.navigate(app_url().clone());
+}
+
+fn app_url() -> &'static Url {
+    static APP: std::sync::OnceLock<Url> = std::sync::OnceLock::new();
+    APP.get_or_init(|| Url::parse(APP_URL).expect("build.rs validated SANGSANGTALK_APP_URL"))
 }
 
 fn show_offline(window: &WebviewWindow) {
@@ -386,12 +434,14 @@ fn is_blank(url: &Url) -> bool {
     url.scheme() == "about" && (url.path() == "blank" || url.as_str() == "about:blank")
 }
 
+/// Same origin as APP_URL (scheme, host and effective port) and no credentials.
 fn is_app_url(url: &Url) -> bool {
-    url.scheme() == "http"
+    let app = app_url();
+    url.scheme() == app.scheme()
         && url.username().is_empty()
         && url.password().is_none()
-        && url.host_str() == Some("127.0.0.1")
-        && url.port() == Some(43123)
+        && url.host_str() == app.host_str()
+        && url.port_or_known_default() == app.port_or_known_default()
 }
 
 fn is_offline_url(url: &Url) -> bool {
@@ -419,6 +469,7 @@ fn window_title(state: LinkState) -> &'static str {
     }
 }
 
+#[cfg(debug_assertions)]
 fn state_word(state: LinkState) -> &'static str {
     match state {
         LinkState::SignedIn => "signed-in",
@@ -442,7 +493,7 @@ fn png_icon(bytes: &[u8]) -> Image<'static> {
 
 // ---------------------------------------------------------------------------
 // Web bridge: the only Tauri commands the remote page may call.
-// Granted to http://127.0.0.1:43123 by capabilities/web-bridge.json; each command
+// Granted to APP_URL by the web-bridge capability that build.rs generates; each command
 // also re-checks the calling webview's URL.
 
 #[tauri::command]
