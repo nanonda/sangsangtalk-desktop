@@ -13,7 +13,8 @@ function failure(status, publicMessage, name) {
   return Object.assign(new Error(name), { status, publicMessage });
 }
 
-export function createZulipFiles(zulipUrl) {
+// tls: { rejectUnauthorized, ca? } from lib/runtime-config.mjs (M4).
+export function createZulipFiles(zulipUrl, tls = { rejectUnauthorized: true }) {
   function request(method, apiPath, headers, { timeoutMs = 30000 } = {}) {
     return https.request({
       hostname: zulipUrl.hostname,
@@ -22,7 +23,7 @@ export function createZulipFiles(zulipUrl) {
       method,
       path: apiPath,
       headers: { "user-agent": "SangsangTalk/0.1", ...headers },
-      rejectUnauthorized: false,
+      ...tls,
       timeout: timeoutMs,
     });
   }

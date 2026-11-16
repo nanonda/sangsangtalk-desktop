@@ -7,17 +7,37 @@ import { createHash, randomBytes } from "node:crypto";
 import { createNoteStore } from "./lib/note-store.mjs";
 import { BLOCKED_EXTENSIONS, attachmentLines, attachmentUrl, canonicalUploadPath, cleanFileName, guessType, isBlockedName, splitAttachments } from "./lib/files.mjs";
 import { createZulipFiles } from "./lib/zulip-files.mjs";
+import { ConfigError, loadConfig } from "./lib/runtime-config.mjs";
+import { createSessionStore } from "./lib/session-store.mjs";
 
-// The browser talks only to this process. Zulip is served with a self-signed
-// certificate and does not allow this origin via CORS, so API calls are proxied
-// here. rejectUnauthorized is disabled only for that upstream request.
-const PORT = Number(process.env.PORT || 43123);
-const HOSTS = ["127.0.0.1", "::1"];
+// The browser talks only to this process; Zulip API calls are proxied here (Zulip does not
+// allow this origin via CORS). All settings come from the environment (lib/runtime-config.mjs):
+// with none set this is the development setup — loopback 43123 and the local self-signed Zulip.
+let config;
+try {
+  config = loadConfig(process.env);
+} catch (error) {
+  if (!(error instanceof ConfigError)) throw error;
+  console.error(`[sangsang] 설정 오류: ${error.message}`);
+  process.exit(1);
+}
+for (const warning of config.warnings) console.warn(`[sangsang] 경고: ${warning}`);
+const PORT = config.port;
+const HOSTS = config.hosts;
 const CHANNEL = "general";
 const TOPIC = "대화";
-const zulipUrl = new URL(process.env.ZULIP_ORIGIN || "https://localhost.localdomain:9991");
+const zulipUrl = config.zulipUrl;
+// TLS options for every request to Zulip (certificate verification per M4).
+const ZULIP_TLS = { rejectUnauthorized: config.tls.rejectUnauthorized, ...(config.tls.ca ? { ca: config.tls.ca } : {}) };
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "data");
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
 const sessions = new Map();
+const sessionStore = createSessionStore({
+  file: path.join(dataDir, "sessions.json"),
+  key: config.sessionKey,
+  log: (message) => console.warn(`[sangsang] 경고: ${message}`),
+});
 const noteStore = createNoteStore(path.join(path.dirname(fileURLToPath(import.meta.url)), "data", "notes.json"));
 const NOTES_ERROR = "쪽지 기록을 읽지 못했습니다. 다시 시도하세요.";
 const PAGE_SIZE = 100;
@@ -26,7 +46,7 @@ const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) > 0 ? Number(process.env
 const MAX_UPLOAD_BYTES = Math.floor(MAX_UPLOAD_MB * 1024 * 1024);
 // Zulip treats a client as offline when its last presence report is older than this.
 const PRESENCE_OFFLINE_SECONDS = 140;
-const zulipFiles = createZulipFiles(zulipUrl);
+const zulipFiles = createZulipFiles(zulipUrl, ZULIP_TLS);
 
 function httpError(status, publicMessage, name = "request") {
   return Object.assign(new Error(name), { status, publicMessage });
@@ -98,7 +118,7 @@ function zulip(method, apiPath, { auth, form, timeoutMs = 20000, signal } = {}) 
       method,
       path: apiPath,
       headers,
-      rejectUnauthorized: false,
+      ...ZULIP_TLS,
     }, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
@@ -159,7 +179,7 @@ function zulipBinary(method, apiPath, { timeoutMs = 20000, redirects = 1 } = {})
       method,
       path: apiPath,
       headers: { accept: "image/*,*/*", "user-agent": "SangsangTalk/0.1" },
-      rejectUnauthorized: false,
+      ...ZULIP_TLS,
     }, (response) => {
       const location = response.headers.location || "";
       if (response.statusCode >= 300 && response.statusCode < 400 && redirects > 0 && location) {
@@ -352,11 +372,77 @@ function cookieValue(request, name) {
 function sessionFrom(request) {
   const sid = cookieValue(request, "sangsang_sid");
   if (!sid) return null;
-  return sessions.get(sid) || null;
+  const session = sessions.get(sid) || null;
+  if (session && session.expiresAt <= Date.now()) {
+    dropSession(sid);
+    return null;
+  }
+  return session;
+}
+
+// ---- M3: sessions survive restarts when SESSION_KEY is set (encrypted web/data/sessions.json). ----
+const SESSION_SAVE_RETRY_MS = 30 * 1000;
+let sessionRetryTimer = null;
+
+// Each call snapshots the current map, so a retry always writes the latest state (including a
+// logout that a failed write had not yet recorded). Failures are logged and retried, never dropped.
+function persistSessions() {
+  if (!sessionStore.enabled) return;
+  const records = [...sessions].map(([sid, session]) => ({
+    sid,
+    email: session.email,
+    userId: session.userId,
+    fullName: session.fullName,
+    apiKey: session.apiKey,
+    expiresAt: session.expiresAt,
+    peer: session.peer || null,
+  }));
+  sessionStore.save(records).then((result) => {
+    if (result.invalid) {
+      console.warn(`[sangsang] 경고: 형식이 맞지 않는 세션 ${result.invalid}개를 저장에서 뺐습니다(해당 사용자는 서버 재시작 후 다시 로그인).`);
+    }
+    if (result.ok) return;
+    console.error(`[sangsang] 세션 파일을 저장하지 못했습니다 (${result.error}). ${SESSION_SAVE_RETRY_MS / 1000}초 후 다시 시도합니다.`);
+    if (!sessionRetryTimer) {
+      sessionRetryTimer = setTimeout(() => {
+        sessionRetryTimer = null;
+        persistSessions();
+      }, SESSION_SAVE_RETRY_MS);
+      sessionRetryTimer.unref();
+    }
+  });
+}
+
+function dropSession(sid) {
+  const session = sessions.get(sid);
+  if (!session) return null;
+  sessions.delete(sid);
+  persistSessions();
+  return session;
+}
+
+async function restoreSessions() {
+  for (const record of await sessionStore.load()) {
+    sessions.set(record.sid, {
+      email: record.email,
+      apiKey: record.apiKey,
+      userId: record.userId,
+      fullName: record.fullName,
+      peer: record.peer || null,
+      expiresAt: record.expiresAt,
+      // Event queues are not saved: a restored session registers a new one on first use.
+      queueId: null,
+      lastEventId: -1,
+      tail: Promise.resolve(),
+    });
+  }
+  return sessions.size;
 }
 
 function sessionCookie(sid, maxAge) {
-  return `sangsang_sid=${encodeURIComponent(sid)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+  // Behind an HTTPS proxy (PUBLIC_ORIGIN https://...) the cookie must never travel over plain HTTP.
+  const secure = config.secureCookie ? "; Secure" : "";
+  return `sangsang_sid=${encodeURIComponent(sid)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`;
 }
 
 function publicUser(session) {
@@ -370,8 +456,13 @@ function publicUser(session) {
   };
 }
 
+// Behind a proxy the Host header is the proxy's upstream (127.0.0.1:43123), so with
+// PUBLIC_ORIGIN set the browser's Origin must equal it exactly, and a missing Origin is refused
+// (browsers always send it on POST/PATCH/DELETE). X-Forwarded-* headers are never trusted.
+// Without PUBLIC_ORIGIN (development) the Host comparison and the "no Origin is fine" rule stay as before.
 function sameOrigin(request) {
   const origin = request.headers.origin;
+  if (config.publicOrigin) return origin === config.publicOrigin;
   if (!origin) return true;
   try {
     return new URL(origin).host === request.headers.host;
@@ -424,6 +515,7 @@ async function handleLogin(request, response) {
     lastEventId: -1,
     tail: Promise.resolve(),
     peer: null,
+    expiresAt: Date.now() + SESSION_TTL_MS,
   };
   try {
     const me = await zulip("GET", "/api/v1/users/me", { auth: basic(session) });
@@ -441,7 +533,8 @@ async function handleLogin(request, response) {
   }
   const sid = randomBytes(32).toString("hex");
   sessions.set(sid, session);
-  sendJson(response, 200, publicUser(session), [sessionCookie(sid, 60 * 60 * 12)]);
+  persistSessions();
+  sendJson(response, 200, publicUser(session), [sessionCookie(sid, SESSION_TTL_MS / 1000)]);
 }
 
 function roleName(role) {
@@ -1168,9 +1261,8 @@ async function onRequest(request, response) {
 
     if (request.method === "POST" && url.pathname === "/api/logout") {
       const sid = cookieValue(request, "sangsang_sid");
-      const session = sid ? sessions.get(sid) : null;
+      const session = sid ? dropSession(sid) : null;
       if (session) {
-        sessions.delete(sid);
         if (session.queueId) {
           zulip("DELETE", `/api/v1/events?${new URLSearchParams({ queue_id: session.queueId })}`, {
             auth: basic(session),
@@ -1368,6 +1460,9 @@ async function onRequest(request, response) {
     }
     const status = error.status || (error.zulipStatus === 401 ? 401 : 502);
     if (status === 401) {
+      // Zulip refused this session's API key (revoked, user deactivated): forget the saved session too.
+      const sid = cookieValue(request, "sangsang_sid");
+      if (sid) dropSession(sid);
       sendJson(response, 401, { error: "로그인이 필요합니다." }, [sessionCookie("", 0)]);
       return;
     }
@@ -1386,6 +1481,22 @@ async function onRequest(request, response) {
     sendJson(response, 502, { error: error.publicMessage || upstreamMessage(error) });
   }
 }
+
+// Saved sessions are back before the first request is accepted.
+const restored = await restoreSessions();
+console.log(`[sangsang] Zulip ${zulipUrl.origin} — TLS ${config.tls.mode}; 세션 ${sessionStore.enabled ? `디스크 저장(복원 ${restored}개)` : "메모리"}${config.publicOrigin ? `; 공개 주소 ${config.publicOrigin}` : ""}`);
+// Expired sessions leave memory and the file even if their owner never comes back.
+setInterval(() => {
+  const now = Date.now();
+  let expired = 0;
+  for (const [sid, session] of sessions) {
+    if (session.expiresAt <= now) {
+      sessions.delete(sid);
+      expired += 1;
+    }
+  }
+  if (expired) persistSessions();
+}, 10 * 60 * 1000).unref();
 
 const servers = [];
 for (const host of HOSTS) {
