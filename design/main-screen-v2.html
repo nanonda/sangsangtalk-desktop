@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상상톡 시안 v2</title>
+<!-- v2: 외부 인터넷 없이 동작해야 하므로 CDN 글꼴을 쓰지 않는다(Pretendard는 로컬 파일이 있을 때만). -->
+<style>
+/* ───────────────── 디자인 토큰 (v1 그대로 + v2 추가) ───────────────── */
+:root{
+  --navy-900:#062c58; --navy-800:#083a73; --navy-700:#0b4a8f; --navy-100:#e6eef8;
+  --teal-700:#0e7a70; --teal-600:#149488; --teal-500:#1aa395; --teal-100:#d4f0ec; --teal-50:#ecf8f6;
+  --sun-500:#f08a24;  --sun-100:#fdeedd;
+  --lime-500:#8fc23a; --lime-100:#eef6dc;
+  --grape-700:#3b2a78; --sky-500:#2ea3dc;
+
+  --ink:#1b2430; --ink-2:#4a5664; --ink-3:#7d8895;
+  --line:#e3e9ee; --line-2:#eef2f5;
+  --bg:#f4f7f9; --panel:#ffffff; --chat-bg:#f1f6f7;
+
+  /* v2 추가: 상태 */
+  --st-active:#8fc23a; --st-active-ink:#4f7a12;
+  --st-idle:#f3b63f;   --st-idle-ink:#9a6400;
+  --st-off:#b8c1ca;    --st-off-ink:#6b7682;
+  /* v2 추가: 위험(나가기·실패) */
+  --danger-600:#c93a3a; --danger-500:#d64545; --danger-50:#fdeeee;
+  /* v2 추가: 파일 형식 */
+  --ft-pdf:#e5484d; --ft-hwp:#1e9ad6; --ft-xlsx:#1d8a4e; --ft-docx:#2b579a; --ft-zip:#8a63d2; --ft-etc:#7d8895;
+
+  --r-sm:8px; --r-md:12px; --r-lg:18px;
+  --shadow-1:0 1px 2px rgba(16,40,64,.06);
+  --shadow-2:0 8px 28px rgba(16,40,64,.10);
+  --shadow-3:0 18px 48px rgba(16,40,64,.22);
+  --font:"Pretendard","Pretendard Variable","Malgun Gothic","Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:var(--font);color:var(--ink);background:#dfe7ec;font-size:14px;letter-spacing:-.01em;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+input{font:inherit;color:inherit}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+[hidden]{display:none!important}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+:focus-visible{outline:2px solid var(--sky-500);outline-offset:2px}
+
+.frame{height:calc(100vh - 46px);min-height:600px;display:grid;grid-template-columns:76px 340px minmax(0,1fr);background:var(--panel);overflow:hidden;position:relative}
+
+/* ───────── 레일 (v1) ───────── */
+.rail{background:linear-gradient(180deg,var(--navy-700),var(--navy-900));display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:6px}
+.rail .emblem{width:44px;height:44px;border-radius:50%;box-shadow:0 0 0 3px rgba(255,255,255,.18);margin-bottom:14px}
+.rail-btn{position:relative;width:60px;padding:9px 0 7px;border-radius:var(--r-md);display:flex;flex-direction:column;align-items:center;gap:4px;color:rgba(255,255,255,.62);font-size:11px;font-weight:500}
+.rail-btn svg.i{width:22px;height:22px}
+.rail-btn:hover{background:rgba(255,255,255,.08);color:#fff}
+.rail-btn[aria-current]{background:rgba(255,255,255,.14);color:#fff}
+.rail-btn[aria-current]::before{content:"";position:absolute;left:-8px;top:12px;bottom:12px;width:4px;border-radius:0 4px 4px 0;background:var(--sun-500)}
+.rail .badge{position:absolute;top:4px;right:8px}
+.rail-spacer{flex:1}
+/* v2: 내 프로필 점 — 레일 남색 위라서 테두리를 남색으로, 점은 14px */
+.me{position:relative;margin-top:6px;border-radius:50%}
+.me img{width:42px;height:42px;border-radius:50%;background:var(--lime-100);object-fit:cover;object-position:50% 12%;border:2px solid rgba(255,255,255,.85);display:block}
+.me .dot{position:absolute;right:-1px;bottom:-1px;width:14px;height:14px;border:2.5px solid var(--navy-900)}
+.me-label{font-size:10.5px;color:rgba(255,255,255,.75);margin-top:3px;display:flex;align-items:center;gap:3px}
+
+.badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--sun-500);color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;font-variant-numeric:tabular-nums}
+
+/* ───────── v2: 상태 점·글자 ───────── */
+.dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;background:var(--st-active)}
+.dot.idle{background:var(--st-idle)}
+.dot.off{background:var(--st-off)}
+.st{font-size:12px;font-weight:600;white-space:nowrap;color:var(--st-active-ink)}
+.st.idle{color:var(--st-idle-ink)} .st.off{color:var(--st-off-ink);font-weight:500}
+
+/* ───────── 목록 (v1 + 그룹 구역) ───────── */
+.list{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel);position:relative}
+.list-head{padding:18px 18px 10px;display:flex;align-items:center;gap:10px}
+.brand{display:flex;align-items:center;gap:8px;flex:1}
+.brand svg{width:38px;height:20px}
+.brand b{font-size:19px;font-weight:800;letter-spacing:-.03em}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--ink-2);position:relative}
+.icon-btn:hover{background:var(--bg);color:var(--ink)}
+.icon-btn[aria-expanded=true]{background:var(--bg);color:var(--ink)}
+.icon-btn.primary{background:var(--teal-600);color:#fff}
+.icon-btn.primary:hover,.icon-btn.primary[aria-expanded=true]{background:var(--teal-700);color:#fff}
+.search{margin:0 18px;display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;border-radius:var(--r-md);background:var(--bg);color:var(--ink-3);border:1px solid transparent}
+.search:focus-within{background:#fff;border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100)}
+.search input{border:0;outline:0;background:none;flex:1;min-width:0}
+.chips{display:flex;gap:6px;padding:12px 18px 8px}
+.chip{height:28px;padding:0 12px;border-radius:14px;font-size:13px;font-weight:600;color:var(--ink-2);background:var(--bg)}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff}
+.chip .n{color:var(--sun-500);margin-left:3px}
+.chip[aria-pressed=true] .n{color:#ffc58a}
+.rooms{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 10px 10px}
+.sec{font-size:12px;font-weight:600;color:var(--ink-3);padding:12px 10px 6px;display:flex;align-items:center;gap:4px}
+.sec .cnt{font-weight:500}
+.room{width:100%;display:grid;grid-template-columns:46px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px;border-radius:var(--r-md);text-align:left}
+.room > span:nth-child(2){min-width:0}
+.room:hover{background:var(--bg)}
+.room[aria-current]{background:var(--teal-50);box-shadow:inset 0 0 0 1px var(--teal-100)}
+.room .t{display:flex;align-items:center;gap:6px;min-width:0}
+.room .t b{font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.room .t em{font-style:normal;font-size:12px;color:var(--ink-3);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.room .t .num{font-size:12px;color:var(--ink-3);font-weight:600;flex:none}
+.room p{margin:3px 0 0;font-size:13px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.room .meta{display:flex;flex-direction:column;align-items:flex-end;gap:6px;align-self:start;padding-top:2px}
+.room time{font-size:11.5px;color:var(--ink-3);white-space:nowrap}
+.room .pin{color:var(--ink-3);width:13px;height:13px}
+
+.av{position:relative;width:46px;height:46px;border-radius:16px;display:grid;place-items:center;font-weight:700;font-size:16px;color:#fff;flex:none}
+.av .dot{position:absolute;right:-2px;bottom:-2px}
+.av.c1{background:#2f7fd0}.av.c2{background:#18a08f}.av.c3{background:#e2873a}.av.c4{background:#7b62c9}.av.c5{background:#d65a7a}.av.c6{background:#4b8a3c}
+.av.group{background:var(--navy-100);color:var(--navy-700)}
+.av.group svg.i{width:24px;height:24px}
+.av.notice{background:var(--sun-100);color:var(--sun-500)}
+.av.sm{width:36px;height:36px;border-radius:13px;font-size:13.5px}
+.av.xs{width:28px;height:28px;border-radius:10px;font-size:11.5px}
+
+.hello{margin:6px 14px 14px;padding:14px 14px 14px 16px;border-radius:var(--r-lg);background:linear-gradient(135deg,var(--lime-100),#f6fbe9 60%,var(--teal-50));display:flex;align-items:center;gap:10px;overflow:hidden}
+.hello img{width:62px;margin:-10px -4px -18px 0;mix-blend-mode:multiply;flex:none}
+.hello b{display:block;font-size:13.5px}
+.hello span{font-size:12.5px;color:var(--ink-2)}
+.hello strong{color:var(--teal-700)}
+
+/* ───────── 대화창 ───────── */
+.chat{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--chat-bg);position:relative}
+.chat-head{height:68px;padding:0 20px;display:flex;align-items:center;gap:12px;background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:3}
+.chat-head .av{width:40px;height:40px;border-radius:14px}
+.chat-head h1{margin:0;font-size:16.5px;font-weight:800;letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
+.count-chip{height:22px;padding:0 8px;border-radius:11px;background:var(--navy-100);color:var(--navy-700);font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px}
+.count-chip svg.i{width:13px;height:13px;stroke-width:2}
+.chat-head p{margin:2px 0 0;font-size:12.5px;color:var(--ink-3);display:flex;align-items:center;gap:6px}
+.head-actions{margin-left:auto;display:flex;gap:2px;position:relative}
+
+.log{flex:1;overflow:auto;padding:8px 20px 18px;position:relative}
+.day{display:flex;justify-content:center;margin:18px 0 10px}
+.day span{font-size:12px;color:var(--ink-2);background:rgba(255,255,255,.8);padding:4px 12px;border-radius:12px;box-shadow:var(--shadow-1)}
+.sys{text-align:center;font-size:12px;color:var(--ink-3);margin:6px 0 14px}
+
+/* v2: 기록 위쪽 끝 */
+.history{display:flex;flex-direction:column;align-items:center;gap:4px;padding:18px 0 6px;color:var(--ink-3);font-size:12.5px}
+.history.loading{flex-direction:row;justify-content:center;gap:8px;padding:14px 0}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--teal-100);border-top-color:var(--teal-600);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.history img{width:54px;mix-blend-mode:multiply;opacity:.95}
+.history b{color:var(--ink-2);font-size:13px}
+
+.msg{display:flex;gap:10px;margin:0 0 4px;max-width:min(680px,82%)}
+.msg .av{margin-top:2px}
+.msg .body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.msg .who{font-size:12.5px;font-weight:700;color:var(--ink-2)}
+.msg .who small{font-weight:500;color:var(--ink-3);margin-left:4px}
+.row{display:flex;align-items:flex-end;gap:6px}
+.bubble{padding:9px 13px;border-radius:4px var(--r-lg) var(--r-lg) var(--r-lg);background:var(--panel);box-shadow:var(--shadow-1);line-height:1.55;font-size:14px;word-break:keep-all;overflow-wrap:anywhere}
+.stamp{font-size:11px;color:var(--ink-3);white-space:nowrap;line-height:1.3}
+.msg.cont{padding-left:46px}
+.msg + .msg:not(.cont){margin-top:14px}
+.msg.mine{margin-left:auto;flex-direction:row-reverse}
+.msg.mine .body{align-items:flex-end}
+.msg.mine .row{flex-direction:row-reverse}
+.msg.mine .bubble{background:var(--teal-600);color:#fff;border-radius:var(--r-lg) 4px var(--r-lg) var(--r-lg)}
+.msg.mine.cont{padding-left:0}
+
+/* v2: 파일 카드 */
+.files{display:flex;flex-direction:column;gap:6px}
+.file{display:flex;align-items:center;gap:12px;padding:11px 10px 11px 12px;border-radius:var(--r-md);background:var(--panel);box-shadow:var(--shadow-1);width:320px;max-width:100%;border:1px solid var(--line-2)}
+.file:hover{border-color:var(--line)}
+.ext{position:relative;width:38px;height:46px;border-radius:7px 12px 7px 7px;background:var(--ft-etc);color:#fff;font-size:10.5px;font-weight:800;letter-spacing:0;display:grid;place-items:end center;padding-bottom:7px;flex:none}
+.ext::before{content:"";position:absolute;top:0;right:0;width:12px;height:12px;border-radius:0 0 0 5px;background:rgba(255,255,255,.35)}
+.ext.pdf{background:var(--ft-pdf)} .ext.hwp{background:var(--ft-hwp)} .ext.xlsx{background:var(--ft-xlsx)}
+.ext.docx{background:var(--ft-docx)} .ext.zip{background:var(--ft-zip)}
+.file .fx{min-width:0;flex:1}
+.file b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file small{color:var(--ink-3);font-size:12px}
+.file .icon-btn{color:var(--teal-700)}
+.file .icon-btn:hover{background:var(--teal-50)}
+/* 내 파일 카드도 흰색 유지(형식 색이 보이도록) */
+.msg.mine .file{border-color:var(--teal-100)}
+
+/* v2: 이미지 썸네일 */
+.thumb{display:block;width:240px;border-radius:var(--r-md);overflow:hidden;background:var(--panel);box-shadow:var(--shadow-1);border:1px solid var(--line-2);text-align:left}
+.thumb .pic{display:block;height:160px;background:
+  radial-gradient(circle at 74% 30%,#f6b25a 0 16px,transparent 17px),
+  linear-gradient(180deg,#8fd0ec 0 55%,transparent 55%),
+  radial-gradient(120% 60% at 30% 100%,#5aa65a 0 60%,transparent 61%),
+  radial-gradient(90% 55% at 85% 100%,#3f8e57 0 60%,transparent 61%),#cfe8c6}
+.thumb .cap{display:flex;justify-content:space-between;gap:8px;padding:7px 10px;font-size:12px;color:var(--ink-2)}
+.thumb .cap span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb .cap small{color:var(--ink-3);flex:none}
+
+/* ───────── 입력창 + v2 업로드 진행 ───────── */
+.composer{margin:0 20px 18px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-2);position:relative;z-index:2}
+.composer:focus-within{border-color:var(--teal-500)}
+.uploads{display:flex;flex-direction:column;gap:6px;padding:10px 10px 0}
+.up{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 8px 8px 10px;border-radius:var(--r-md);background:var(--bg)}
+.up .ext{width:28px;height:34px;font-size:8.5px;padding-bottom:5px;border-radius:5px 9px 5px 5px}
+.up .ext::before{width:9px;height:9px}
+.up .nm{display:flex;align-items:baseline;gap:8px;min-width:0}
+.up .nm b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.up .nm small{font-size:12px;color:var(--ink-3);white-space:nowrap}
+.bar{height:4px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;background:var(--teal-600);transition:width .3s}
+.up .acts{display:flex;align-items:center;gap:2px}
+.up .icon-btn{width:28px;height:28px;border-radius:8px}
+.up .icon-btn svg.i{width:16px;height:16px}
+.up .ok{color:var(--teal-700);font-size:12px;font-weight:600;display:flex;align-items:center;gap:3px;margin-right:2px}
+.up .ok svg.i{width:15px;height:15px;stroke-width:2.2}
+.up.fail{background:var(--danger-50)}
+.up .err{font-size:12px;color:var(--danger-600);margin-top:3px;font-weight:500}
+.txt-btn{height:28px;padding:0 10px;border-radius:8px;font-size:12.5px;font-weight:700;color:var(--teal-700)}
+.txt-btn:hover{background:var(--teal-50)}
+.up.fail .txt-btn{color:var(--danger-600)}
+.up.fail .txt-btn:hover{background:#fbdcdc}
+.composer textarea{display:block;width:100%;border:0;outline:0;resize:none;font:inherit;font-size:14.5px;padding:14px 16px 4px;min-height:52px;max-height:160px;background:none;color:var(--ink)}
+.composer textarea::placeholder{color:var(--ink-3)}
+.tools{display:flex;align-items:center;gap:4px;padding:6px 8px 8px}
+.attach{height:34px;padding:0 12px 0 9px;border-radius:10px;display:inline-flex;align-items:center;gap:5px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.attach:hover{background:var(--bg);color:var(--ink)}
+.tools .hint{margin-left:auto;margin-right:10px;font-size:11.5px;color:var(--ink-3)}
+.send{height:36px;padding:0 16px 0 13px;border-radius:11px;background:var(--teal-600);color:#fff;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.send:hover{background:var(--teal-700)}
+.send:disabled{background:#c5d3d8;cursor:default}
+
+/* v2: 끌어다 놓기 오버레이 (대화창 전체) */
+.drop{position:absolute;inset:0;z-index:20;display:none;padding:14px;background:rgba(241,246,247,.86);backdrop-filter:blur(2px)}
+.drop > div{height:100%;border:2.5px dashed var(--teal-500);border-radius:22px;background:rgba(236,248,246,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center}
+.drop img{width:120px;mix-blend-mode:multiply;margin-bottom:6px}
+.drop b{font-size:19px;font-weight:800;color:var(--teal-700)}
+.drop span{font-size:13.5px;color:var(--ink-2)}
+.drop small{font-size:12.5px;color:var(--ink-3);margin-top:4px}
+
+/* ───────── v2: 팝오버 메뉴 ───────── */
+.menu{position:absolute;z-index:30;min-width:220px;padding:6px;border-radius:14px;background:var(--panel);box-shadow:var(--shadow-3);border:1px solid var(--line);display:none}
+.menu button{width:100%;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;text-align:left;font-size:14px;font-weight:600}
+.menu button:hover,.menu button:focus-visible{background:var(--bg)}
+.menu button small{display:block;font-size:12px;color:var(--ink-3);font-weight:500;margin-top:1px}
+.menu .mi{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;flex:none}
+.menu .mi.t{background:var(--teal-50);color:var(--teal-700)} .menu .mi.n{background:var(--navy-100);color:var(--navy-700)}
+.menu hr{border:0;border-top:1px solid var(--line-2);margin:6px 4px}
+.menu .danger{color:var(--danger-600)}
+.menu .danger:hover{background:var(--danger-50)}
+.menu.compact button{padding:9px 12px;font-weight:500}
+#newMenu{top:58px;left:76px;left:calc(76px + 340px - 18px - 260px);width:260px}
+#groupMenu{top:58px;right:20px;width:200px}
+
+/* ───────── v2: 대화상자 ───────── */
+.scrim{position:absolute;inset:0;z-index:40;background:rgba(10,28,48,.42);display:none;place-items:center;padding:24px}
+.dialog{background:var(--panel);border-radius:20px;box-shadow:var(--shadow-3);width:520px;max-width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden}
+.dialog header{padding:22px 24px 8px;display:flex;align-items:flex-start;gap:12px}
+.dialog h2{margin:0;font-size:18px;font-weight:800;letter-spacing:-.02em}
+.dialog header p{margin:4px 0 0;font-size:13px;color:var(--ink-3)}
+.dialog header .icon-btn{margin-left:auto;margin-top:-4px}
+.dialog .bd{padding:8px 24px 4px;display:flex;flex-direction:column;gap:12px;min-height:0;flex:1}
+.dialog footer{padding:14px 24px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--line-2)}
+.field label{display:block;font-size:12.5px;font-weight:700;color:var(--ink-2);margin-bottom:6px}
+.field input{width:100%;height:42px;padding:0 14px;border-radius:var(--r-md);border:1px solid var(--line);background:#fff;outline:0}
+.field input:focus{border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100)}
+.field .help{font-size:12px;color:var(--ink-3);margin-top:5px}
+.btn{height:40px;padding:0 18px;border-radius:11px;font-weight:700;font-size:14px}
+.btn.ghost{background:var(--bg);color:var(--ink-2)} .btn.ghost:hover{background:var(--line)}
+.btn.primary{background:var(--teal-600);color:#fff} .btn.primary:hover{background:var(--teal-700)}
+.btn.primary:disabled{background:#c5d3d8;cursor:default}
+.btn.danger{background:var(--danger-500);color:#fff} .btn.danger:hover{background:var(--danger-600)}
+
+.picked{display:flex;flex-wrap:wrap;gap:6px;min-height:32px;align-items:center}
+.picked .lbl{font-size:12.5px;font-weight:700;color:var(--ink-2);margin-right:4px}
+.pchip{height:30px;padding:0 6px 0 4px;border-radius:15px;background:var(--teal-50);border:1px solid var(--teal-100);display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--teal-700)}
+.pchip .av{width:22px;height:22px;border-radius:8px;font-size:10px}
+.pchip button{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;color:var(--teal-700)}
+.pchip button:hover{background:var(--teal-100)}
+.pchip button svg.i{width:13px;height:13px;stroke-width:2.2}
+.pchip.me{background:var(--bg);border-color:var(--line);color:var(--ink-2)}
+
+.people{border:1px solid var(--line);border-radius:var(--r-md);overflow:auto;max-height:270px;min-height:160px}
+.dept{position:sticky;top:0;background:#f8fafb;padding:7px 14px;font-size:12px;font-weight:700;color:var(--ink-3);border-bottom:1px solid var(--line-2);display:flex;justify-content:space-between}
+.person{display:grid;grid-template-columns:22px 36px minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 14px;cursor:pointer}
+.person:hover{background:var(--bg)}
+.person b{font-size:14px;font-weight:700;display:block}
+.person em{font-style:normal;font-size:12px;color:var(--ink-3)}
+.person.disabled{cursor:default;opacity:.55}
+.person.disabled:hover{background:none}
+.person .tag{font-size:11.5px;color:var(--ink-3);font-weight:600}
+.cb{appearance:none;width:22px;height:22px;border-radius:7px;border:1.8px solid #c3ccd4;background:#fff;display:grid;place-items:center;margin:0;cursor:pointer}
+.cb:checked{background:var(--teal-600);border-color:var(--teal-600)}
+.cb:checked::after{content:"";width:10px;height:5px;border:2.4px solid #fff;border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+
+.confirm{width:400px}
+.confirm header{flex-direction:column;align-items:center;text-align:center;padding-top:26px}
+.confirm header img{width:76px;mix-blend-mode:multiply;margin-bottom:2px}
+.confirm .bd{padding:0 28px 8px;text-align:center;font-size:13.5px;color:var(--ink-2);line-height:1.6}
+.confirm footer{border:0;padding-top:12px}
+.confirm footer .btn{flex:1}
+
+/* ───────── 시안 화면 전환 (시안 전용, 구현 대상 아님) ───────── */
+.switcher{position:fixed;left:50%;bottom:5px;transform:translateX(-50%);z-index:100;display:flex;gap:2px;padding:4px;border-radius:14px;background:rgba(27,36,48,.92);box-shadow:var(--shadow-3);max-width:calc(100vw - 16px);overflow-x:auto}
+.switcher button{height:30px;padding:0 11px;border-radius:10px;color:rgba(255,255,255,.75);font-size:12px;font-weight:600;white-space:nowrap}
+.switcher button[aria-pressed=true]{background:#fff;color:var(--ink)}
+.switcher span{color:rgba(255,255,255,.5);font-size:11px;padding:0 6px 0 8px;align-self:center;white-space:nowrap}
+
+body[data-s=new]    #newMenu{display:block}
+body[data-s=gmenu]  #groupMenu{display:block}
+body[data-s=create] #createDlg{display:grid}
+body[data-s=leave]  #leaveDlg{display:grid}
+body[data-s=drop]   .drop{display:block}
+.uploads{display:none}
+body[data-s=upload] .uploads{display:flex}
+body[data-s=upload] .send{background:#c5d3d8}
+body[data-s=new]    #newBtn,
+body[data-s=gmenu]  #moreBtn{}
+
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+@media (max-width:900px){
+  .frame{grid-template-columns:64px minmax(0,1fr)}
+  .chat{display:none}
+  .rail-btn{width:52px;font-size:10px}
+  #newMenu{left:auto;right:18px}
+}
+</style>
+</head>
+<body data-s="base">
+<div class="frame">
+
+  <!-- 레일 -->
+  <nav class="rail" aria-label="주 메뉴">
+    <svg class="emblem" viewBox="0 0 64 64" role="img" aria-label="음성군">
+      <defs><clipPath id="em"><circle cx="32" cy="32" r="32"/></clipPath></defs>
+      <g clip-path="url(#em)">
+        <rect width="64" height="64" fill="#0b4a9a"/>
+        <path fill="#17988a" d="M0 36c12 2 24 6 34 4 12-3 20-2 30 1v23H0Z"/>
+        <path fill="#fff" d="M0 30c9-3 19-2 28 0 7 2 14 2 22-2 5-2 10-2 14 0v5c-5-1-9 0-13 2-9 4-16 4-22 2-3-1-4 2-1 4 3 3 8 4 14 4-8 4-17 4-23 0-4-3-3-7 2-9-7-1-14-1-21 2Z"/>
+        <circle cx="38" cy="17" r="6.4" fill="#f08a24"/>
+      </g>
+    </svg>
+    <button class="rail-btn" aria-current="page"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M8.5 9h7M8.5 12h4.5"/></svg>대화<span class="badge">9</span></button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg>직원</button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/></svg>쪽지<span class="badge">1</span></button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><path d="m12 3.8 2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8Z"/></svg>즐겨찾기</button>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.4A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z"/></svg>설정</button>
+    <div class="me" title="박지민 · 사용 중">
+      <img src="assets/turtle-front.png" alt="내 프로필">
+      <span class="dot" aria-hidden="true"></span>
+    </div>
+    <span class="me-label">사용 중</span>
+  </nav>
+
+  <!-- 목록 -->
+  <section class="list" aria-label="대화 목록">
+    <header class="list-head">
+      <div class="brand">
+        <svg viewBox="0 0 76 40" aria-hidden="true">
+          <g fill="none" stroke-linecap="round">
+            <path id="inf" d="M38 20C30 6 6 6 6 20s24 14 32 0 32-14 32 0-24 14-32 0Z" stroke="#149488" stroke-width="8"/>
+            <use href="#inf" stroke="#fff" stroke-width="5.6"/>
+            <use href="#inf" stroke="#149488" stroke-width="3.6"/>
+            <use href="#inf" stroke="#fff" stroke-width="1.8"/>
+          </g>
+        </svg>
+        <b>상상톡</b>
+      </div>
+      <button class="icon-btn primary" id="newBtn" aria-label="새 대화" aria-haspopup="menu" aria-expanded="false" data-go="new"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+    </header>
+    <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="대화방, 이름 검색"></label>
+    <div class="chips" role="group" aria-label="필터">
+      <button class="chip" aria-pressed="true">전체</button>
+      <button class="chip" aria-pressed="false">안읽음<span class="n">9</span></button>
+      <button class="chip" aria-pressed="false">그룹</button>
+      <button class="chip" aria-pressed="false">1:1</button>
+    </div>
+
+    <div class="rooms">
+      <div class="sec"><svg class="i pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 3v2H6v-2l4-3ZM12 15v5"/></svg>고정됨</div>
+      <button class="room">
+        <span class="av notice"><svg class="i" viewBox="0 0 24 24"><path d="M4 10v4a1 1 0 0 0 1 1h2l6 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/></svg></span>
+        <span><span class="t"><b>전체 채널</b></span><p>윤성호: 이번 주 금요일 시범 사용 설명회 있습니다.</p></span>
+        <span class="meta"><time>오전 9:05</time><span class="badge">2</span></span>
+      </button>
+
+      <!-- v2: 그룹 구역 -->
+      <div class="sec">그룹 <span class="cnt">3</span></div>
+      <button class="room" aria-current="true">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>홍보 협업방</b><span class="num">6</span></span><p>나: 파일 3개</p></span>
+        <span class="meta"><time>오전 10:42</time></span>
+      </button>
+      <button class="room">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>홍보실 주간보고</b><span class="num">5</span></span><p>이서준: 파일: 주간보고_1114.hwp</p></span>
+        <span class="meta"><time>오전 9:30</time><span class="badge">4</span></span>
+      </button>
+      <button class="room">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>윤성호, 한지수, 오민재 외 1명</b><span class="num">5</span></span><p>한지수: 네 확인했습니다.</p></span>
+        <span class="meta"><time>어제</time></span>
+      </button>
+
+      <div class="sec">1:1 대화</div>
+      <button class="room" title="김도윤 · 사용 중">
+        <span class="av c1">도윤<span class="dot" aria-hidden="true"></span></span>
+        <span><span class="t"><b>김도윤</b><span class="st">사용 중</span></span><p>보도자료 초안 확인 부탁해요.</p></span>
+        <span class="meta"><time>오전 10:31</time><span class="badge">3</span></span>
+      </button>
+      <button class="room" title="최유나 · 자리비움">
+        <span class="av c5">유나<span class="dot idle" aria-hidden="true"></span></span>
+        <span><span class="t"><b>최유나</b><span class="st idle">자리비움</span></span><p>사진: 행사_현장_01.jpg</p></span>
+        <span class="meta"><time>오전 9:48</time></span>
+      </button>
+      <button class="room" title="오민재 · 오프라인">
+        <span class="av c3">민재<span class="dot off" aria-hidden="true"></span></span>
+        <span><span class="t"><b>오민재</b><span class="st off">오프라인</span></span><p>내일 오전에 다시 연락드리겠습니다.</p></span>
+        <span class="meta"><time>어제</time></span>
+      </button>
+      <button class="room" title="서다온 · 사용 중">
+        <span class="av c6">다온<span class="dot" aria-hidden="true"></span></span>
+        <span><span class="t"><b>서다온</b><span class="st">사용 중</span></span><p>감사합니다!</p></span>
+        <span class="meta"><time>11월 13일</time></span>
+      </button>
+    </div>
+
+    <div class="hello">
+      <img src="assets/turtle-thumbs.png" alt="">
+      <div><b>좋은 아침이에요!</b><span>읽지 않은 대화가 <strong>9건</strong> 있어요.</span></div>
+    </div>
+
+    <!-- v2: 새 대화 메뉴 -->
+    <div class="menu" id="newMenu" role="menu" aria-label="새 대화">
+      <button role="menuitem"><span class="mi t"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.2"/><path d="M5.5 19.5c.8-3.4 3.3-5.1 6.5-5.1s5.7 1.7 6.5 5.1"/></svg></span><span>1:1 대화<small>직원 한 명과 바로 대화</small></span></button>
+      <button role="menuitem" data-go="create"><span class="mi n"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span><span>그룹 대화<small>여러 명을 골라 대화방 만들기</small></span></button>
+    </div>
+  </section>
+
+  <!-- 대화창 -->
+  <main class="chat" aria-label="대화">
+    <header class="chat-head">
+      <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+      <div>
+        <h1>홍보 협업방 <span class="count-chip" title="참여자 6명"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.2"/><path d="M5.5 19.5c.8-3.4 3.3-5.1 6.5-5.1s5.7 1.7 6.5 5.1"/></svg>6</span></h1>
+        <p>김도윤, 이서준, 윤성호, 한지수, 강예린, 나</p>
+      </div>
+      <div class="head-actions">
+        <button class="icon-btn" id="moreBtn" aria-label="대화방 메뉴" aria-haspopup="menu" aria-expanded="false" data-go="gmenu"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/></svg></button>
+      </div>
+    </header>
+
+    <!-- v2: 그룹 메뉴 -->
+    <div class="menu compact" id="groupMenu" role="menu" aria-label="대화방 메뉴">
+      <button role="menuitem"><svg class="i" viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17Z"/><path d="m14 8 3 3"/></svg>이름 바꾸기</button>
+      <button role="menuitem"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><path d="M18 8v6M15 11h6"/></svg>참여자 초대</button>
+      <hr>
+      <button role="menuitem" class="danger" data-go="leave"><svg class="i" viewBox="0 0 24 24"><path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4"/><path d="M10 12h10M16.5 8.5 20 12l-3.5 3.5"/></svg>대화방 나가기</button>
+    </div>
+
+    <div class="log" id="log" role="log" aria-label="메시지">
+      <!-- v2: 기록 위쪽 끝 — 두 상태 중 하나 -->
+      <div class="history loading" id="histLoading" hidden><span class="spin" aria-hidden="true"></span>이전 메시지를 불러오는 중…</div>
+      <div class="history" id="histStart">
+        <img src="assets/turtle-side.png" alt="">
+        <b>대화의 처음입니다</b>
+        <span>11월 10일 김도윤 님이 대화방을 만들었습니다.</span>
+      </div>
+
+      <div class="day"><span>2026년 11월 16일 월요일</span></div>
+      <p class="sys">김도윤 님이 강예린 님을 초대했습니다.</p>
+
+      <div class="msg">
+        <span class="av sm c1">도윤</span>
+        <div class="body">
+          <span class="who">김도윤<small>홍보실장</small></span>
+          <div class="row"><div class="bubble">축제 홍보 자료 정리해서 올려 주세요. 형식별로 다 받아 볼게요.</div><span class="stamp">오전 9:58</span></div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <span class="av sm c4">서준</span>
+        <div class="body">
+          <span class="who">이서준<small>홍보기획팀장</small></span>
+          <div class="row">
+            <div class="files">
+              <div class="file"><span class="ext pdf">PDF</span><span class="fx"><b>2026_군민축제_홍보계획.pdf</b><small>2.4MB · PDF</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+              <div class="file"><span class="ext hwp">HWP</span><span class="fx"><b>보도자료_초안_v3.hwp</b><small>186KB · 한글</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+              <div class="file"><span class="ext xlsx">XLSX</span><span class="fx"><b>부스_배정표.xlsx</b><small>48KB · 엑셀</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+            </div>
+            <span class="stamp">오전 10:05</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <span class="av sm c5">예린</span>
+        <div class="body">
+          <span class="who">강예린<small>주무관</small></span>
+          <div class="row">
+            <button class="thumb" aria-label="행사_현장_01.jpg 내려받기"><span class="pic"></span><span class="cap"><span>행사_현장_01.jpg</span><small>1.8MB</small></span></button>
+            <span class="stamp">오전 10:12</span>
+          </div>
+        </div>
+      </div>
+      <div class="msg cont">
+        <div class="body"><div class="row"><div class="bubble">어제 리허설 현장 사진입니다.</div><span class="stamp">오전 10:12</span></div></div>
+      </div>
+
+      <div class="msg mine">
+        <div class="body">
+          <div class="row">
+            <div class="files">
+              <div class="file"><span class="ext docx">DOCX</span><span class="fx"><b>축제_안내문_영문.docx</b><small>92KB · 워드</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+              <div class="file"><span class="ext zip">ZIP</span><span class="fx"><b>홍보물_원본_모음.zip</b><small>64.2MB · 압축</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+              <div class="file"><span class="ext">TXT</span><span class="fx"><b>현수막_문구.txt</b><small>기타</small></span><button class="icon-btn" aria-label="내려받기"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg></button></div>
+            </div>
+            <span class="stamp">오전 10:42</span>
+          </div>
+        </div>
+      </div>
+      <div class="msg mine cont">
+        <div class="body"><div class="row"><div class="bubble">영문 안내문, 원본 묶음, 현수막 문구 올렸습니다.</div><span class="stamp">오전 10:42</span></div></div>
+      </div>
+    </div>
+
+    <form class="composer" onsubmit="return false">
+      <!-- v2: 업로드 진행 -->
+      <div class="uploads" aria-label="올리는 파일">
+        <div class="up">
+          <span class="ext pdf">PDF</span>
+          <div><div class="nm"><b>축제_포스터_최종.pdf</b><small>8.6MB 중 5.2MB · 60%</small></div><div class="bar" role="progressbar" aria-valuenow="60" aria-valuemin="0" aria-valuemax="100"><i style="width:60%"></i></div></div>
+          <div class="acts"><button type="button" class="icon-btn" aria-label="올리기 취소"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+        </div>
+        <div class="up">
+          <span class="ext hwp">HWP</span>
+          <div><div class="nm"><b>결과보고서_양식.hwp</b><small>212KB</small></div></div>
+          <div class="acts"><span class="ok"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>준비됨</span><button type="button" class="icon-btn" aria-label="빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+        </div>
+        <div class="up fail">
+          <span class="ext">MP4</span>
+          <div><div class="nm"><b>홍보영상_원본.mp4</b><small>148MB</small></div><div class="err">파일이 너무 큽니다. 파일당 100MB까지 보낼 수 있어요.</div></div>
+          <div class="acts"><button type="button" class="icon-btn" aria-label="빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+        </div>
+        <div class="up fail">
+          <span class="ext xlsx">XLSX</span>
+          <div><div class="nm"><b>예산_집행내역.xlsx</b><small>1.1MB</small></div><div class="err">올리지 못했습니다. 연결을 확인하고 다시 시도하세요.</div></div>
+          <div class="acts"><button type="button" class="txt-btn">다시 시도</button><button type="button" class="icon-btn" aria-label="빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+        </div>
+      </div>
+      <label class="sr-only" for="msg">메시지</label>
+      <textarea id="msg" rows="1" placeholder="홍보 협업방에 메시지 보내기"></textarea>
+      <div class="tools">
+        <button type="button" class="attach" aria-label="파일 첨부"><svg class="i" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>파일</button>
+        <span class="hint">끌어다 놓거나 붙여넣어도 됩니다 · Enter 전송</span>
+        <button class="send" title="올리는 중인 파일이 끝나면 보낼 수 있어요"><svg class="i" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M20 4 9.5 14.5M20 4l-6.5 16-4-5.5L4 10.5Z"/></svg>전송</button>
+      </div>
+    </form>
+
+    <!-- v2: 끌어다 놓기 -->
+    <div class="drop" aria-hidden="true">
+      <div>
+        <img src="assets/turtle-jump.png" alt="">
+        <b>여기에 놓으면 파일을 올립니다</b>
+        <span>홍보 협업방 · 여러 개를 한 번에 놓아도 됩니다</span>
+        <small>파일당 최대 100MB · 실행 파일(.exe .bat .msi 등)은 보낼 수 없어요</small>
+      </div>
+    </div>
+  </main>
+
+  <!-- v2: 그룹 만들기 -->
+  <div class="scrim" id="createDlg">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="cTitle">
+      <header>
+        <div><h2 id="cTitle">그룹 대화 만들기</h2><p>함께 대화할 직원을 고르세요. 나는 자동으로 들어갑니다.</p></div>
+        <button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </header>
+      <div class="bd">
+        <div class="field">
+          <label for="gname">대화방 이름</label>
+          <input id="gname" placeholder="김도윤, 이서준, 윤성호 외 1명">
+          <div class="help">비워 두면 참여자 이름으로 정해집니다.</div>
+        </div>
+        <div class="picked" aria-label="선택한 직원">
+          <span class="lbl">선택 4명</span>
+          <span class="pchip"><span class="av c1">도윤</span>김도윤<button aria-label="김도윤 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+          <span class="pchip"><span class="av c4">서준</span>이서준<button aria-label="이서준 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+          <span class="pchip"><span class="av c2">성호</span>윤성호<button aria-label="윤성호 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+          <span class="pchip"><span class="av c5">예린</span>강예린<button aria-label="강예린 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+        </div>
+        <label class="search" style="margin:0"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="이름, 부서, 직위로 찾기"></label>
+        <div class="people" role="group" aria-label="직원">
+          <div class="dept"><span>홍보실</span><span>5명</span></div>
+          <label class="person"><input type="checkbox" class="cb" checked><span class="av sm c1">도윤<span class="dot"></span></span><span><b>김도윤</b><em>홍보실장</em></span><span class="st">사용 중</span></label>
+          <label class="person"><input type="checkbox" class="cb" checked><span class="av sm c4">서준<span class="dot"></span></span><span><b>이서준</b><em>홍보기획팀장</em></span><span class="st">사용 중</span></label>
+          <div class="person disabled"><input type="checkbox" class="cb" checked disabled><span class="av sm c2" style="background:var(--lime-100);overflow:hidden"><img src="assets/turtle-front.png" alt="" style="width:150%;margin-top:28%;mix-blend-mode:multiply"></span><span><b>박지민</b><em>주무관</em></span><span class="tag">나</span></div>
+          <label class="person"><input type="checkbox" class="cb"><span class="av sm c5">유나<span class="dot idle"></span></span><span><b>최유나</b><em>주무관</em></span><span class="st idle">자리비움</span></label>
+          <label class="person"><input type="checkbox" class="cb"><span class="av sm c3">하람<span class="dot off"></span></span><span><b>정하람</b><em>주무관</em></span><span class="st off">오프라인</span></label>
+          <div class="dept"><span>자치행정과</span><span>5명</span></div>
+          <label class="person"><input type="checkbox" class="cb" checked><span class="av sm c2">성호<span class="dot"></span></span><span><b>윤성호</b><em>자치행정과장</em></span><span class="st">사용 중</span></label>
+          <label class="person"><input type="checkbox" class="cb"><span class="av sm c6">지수<span class="dot idle"></span></span><span><b>한지수</b><em>자치행정팀장</em></span><span class="st idle">자리비움</span></label>
+          <label class="person"><input type="checkbox" class="cb"><span class="av sm c3">민재<span class="dot off"></span></span><span><b>오민재</b><em>주무관</em></span><span class="st off">오프라인</span></label>
+          <label class="person"><input type="checkbox" class="cb" checked><span class="av sm c5">예린<span class="dot"></span></span><span><b>강예린</b><em>주무관</em></span><span class="st">사용 중</span></label>
+          <label class="person"><input type="checkbox" class="cb"><span class="av sm c6">다온<span class="dot"></span></span><span><b>서다온</b><em>주무관</em></span><span class="st">사용 중</span></label>
+        </div>
+      </div>
+      <footer>
+        <button class="btn ghost" data-go="base">취소</button>
+        <button class="btn primary">만들기 (5명)</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- v2: 나가기 확인 -->
+  <div class="scrim" id="leaveDlg">
+    <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="lTitle" aria-describedby="lDesc">
+      <header>
+        <img src="assets/turtle-side.png" alt="">
+        <h2 id="lTitle">‘홍보 협업방’에서 나갈까요?</h2>
+      </header>
+      <div class="bd" id="lDesc">나가면 이 대화방의 새 메시지를 받지 않습니다.<br>다시 들어오려면 참여자가 초대해야 합니다.<br>주고받은 기록은 지워지지 않습니다.</div>
+      <footer>
+        <button class="btn ghost" data-go="base">취소</button>
+        <button class="btn danger">나가기</button>
+      </footer>
+    </div>
+  </div>
+</div>
+
+<!-- 시안 화면 전환 (시안 전용) -->
+<nav class="switcher" aria-label="시안 화면">
+  <span>시안 화면</span>
+  <button data-go="base" aria-pressed="true">기본</button>
+  <button data-go="new">새 대화</button>
+  <button data-go="create">그룹 만들기</button>
+  <button data-go="gmenu">그룹 메뉴</button>
+  <button data-go="leave">나가기 확인</button>
+  <button data-go="upload">업로드 진행</button>
+  <button data-go="drop">끌어다 놓기</button>
+  <button data-go="loading">이전 기록 로딩</button>
+</nav>
+
+<script>
+/* 시안용 화면 전환만 한다. #create 처럼 주소로 바로 열 수 있다. */
+const loading=document.getElementById('histLoading'), start=document.getElementById('histStart'), log=document.getElementById('log');
+function go(s){
+  if(!s||!document.querySelector(`.switcher [data-go="${s}"]`)) s='base';
+  document.body.dataset.s=s;
+  document.querySelectorAll('.switcher button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===s));
+  document.getElementById('newBtn').setAttribute('aria-expanded',s==='new');
+  document.getElementById('moreBtn').setAttribute('aria-expanded',s==='gmenu');
+  loading.hidden=s!=='loading'; start.hidden=s==='loading';
+  log.scrollTop=s==='loading'?0:log.scrollHeight;
+  if(location.hash.slice(1)!==s) history.replaceState(null,'',s==='base'?location.pathname:'#'+s);
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-go]');
+  if(t){e.preventDefault();const s=t.dataset.go;go(document.body.dataset.s===s&&!t.closest('.switcher')?'base':s);return}
+  if(e.target.classList.contains('scrim')) go('base');
+  else if(!e.target.closest('.menu')&&['new','gmenu'].includes(document.body.dataset.s)) go('base');
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')go('base')});
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.chip').forEach(x=>x.setAttribute('aria-pressed','false'));c.setAttribute('aria-pressed','true')}));
+addEventListener('hashchange',()=>go(location.hash.slice(1)));
+go(location.hash.slice(1));
+</script>
+</body>
+</html>
