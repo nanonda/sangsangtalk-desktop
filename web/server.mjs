@@ -3,8 +3,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createNoteStore } from "./lib/note-store.mjs";
+import { BLOCKED_EXTENSIONS, attachmentLines, attachmentUrl, canonicalUploadPath, cleanFileName, guessType, isBlockedName, splitAttachments } from "./lib/files.mjs";
+import { createZulipFiles } from "./lib/zulip-files.mjs";
 
 // The browser talks only to this process. Zulip is served with a self-signed
 // certificate and does not allow this origin via CORS, so API calls are proxied
@@ -18,6 +20,17 @@ const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "publi
 const sessions = new Map();
 const noteStore = createNoteStore(path.join(path.dirname(fileURLToPath(import.meta.url)), "data", "notes.json"));
 const NOTES_ERROR = "쪽지 기록을 읽지 못했습니다. 다시 시도하세요.";
+const PAGE_SIZE = 100;
+const MAX_EMPTY_PAGES = 20; // up to 2,000 hidden (note) messages skipped per request
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) > 0 ? Number(process.env.MAX_UPLOAD_MB) : 100;
+const MAX_UPLOAD_BYTES = Math.floor(MAX_UPLOAD_MB * 1024 * 1024);
+// Zulip treats a client as offline when its last presence report is older than this.
+const PRESENCE_OFFLINE_SECONDS = 140;
+const zulipFiles = createZulipFiles(zulipUrl);
+
+function httpError(status, publicMessage, name = "request") {
+  return Object.assign(new Error(name), { status, publicMessage });
+}
 
 function asNotesError(error) {
   if (error?.code !== "NOTES_STORE") return error;
@@ -40,10 +53,12 @@ const PUBLIC_FILES = new Map([
   ["/index.html", "index.html"],
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
+  ["/desktop-bridge.js", "desktop-bridge.js"],
   ["/favicon.svg", "favicon.svg"],
   ["/assets/turtle-front.png", "assets/turtle-front.png"],
   ["/assets/turtle-thumbs.png", "assets/turtle-thumbs.png"],
   ["/assets/turtle-jump.png", "assets/turtle-jump.png"],
+  ["/assets/turtle-side.png", "assets/turtle-side.png"],
 ]);
 
 const TYPES = {
@@ -90,6 +105,11 @@ function zulip(method, apiPath, { auth, form, timeoutMs = 20000, signal } = {}) 
         const text = Buffer.concat(chunks).toString("utf8");
         let json = null;
         try { json = JSON.parse(text); } catch { json = null; }
+        if (response.statusCode === 429) {
+          // Zulip's per-user API rate limit; tell the browser to back off instead of a generic 502.
+          settle(reject, httpError(429, "요청이 너무 많습니다. 잠시 후 다시 시도하세요.", "rate"));
+          return;
+        }
         settle(resolve, { status: response.statusCode, json });
       });
     });
@@ -200,19 +220,30 @@ function enqueue(session, task) {
 }
 
 function normalize(message, session) {
+  const { content, attachments } = splitAttachments(typeof message.content === "string" ? message.content : "");
   const base = {
     id: message.id,
     senderId: message.sender_id,
     senderName: message.sender_full_name || message.sender_email || "\uC54C \uC218 \uC5C6\uC74C",
     senderEmail: message.sender_email || "",
     topic: message.subject || "",
-    content: typeof message.content === "string" ? message.content : "",
+    content,
     timestamp: message.timestamp,
     kind: null,
     peerId: null,
+    groupId: null,
+    attachments,
   };
   if (isGeneral(message)) {
     base.kind = "channel";
+    return base;
+  }
+  // Only invite-only channels I belong to are group rooms (session.groupIds, from listGroups).
+  // Messages from any other channel are not part of this app and are dropped.
+  if (message.type === "stream") {
+    if (!Number.isInteger(message.stream_id) || !session?.groupIds?.has(message.stream_id)) return null;
+    base.kind = "group";
+    base.groupId = message.stream_id;
     return base;
   }
   if (Array.isArray(message.display_recipient) && session) {
@@ -236,7 +267,8 @@ async function ensureQueue(session) {
   const response = await zulip("POST", "/api/v1/register", {
     auth: basic(session),
     form: {
-      event_types: JSON.stringify(["message"]),
+      // subscription/stream events tell the browser to re-read /api/groups.
+      event_types: JSON.stringify(["message", "subscription", "stream"]),
     },
   });
   if (response.json?.result !== "success" || !response.json.queue_id) {
@@ -249,20 +281,30 @@ async function ensureQueue(session) {
   session.lastEventId = response.json.last_event_id;
 }
 
-function readBody(request, limit = 65536) {
+// Past `limit` the rest of the body is read and thrown away, and 413 is answered only
+// once it has all arrived: closing the socket while the client is still sending makes it
+// see a connection reset instead of the JSON error. Beyond `discardLimit` we stop being polite.
+function readBody(request, limit = 65536, discardLimit = 1024 * 1024) {
+  const tooLarge = () => Object.assign(new Error("too large"), {
+    status: 413,
+    publicMessage: "요청이 너무 큽니다.",
+  });
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     request.on("data", (chunk) => {
       size += chunk.length;
-      if (size > limit) {
-        reject(Object.assign(new Error("too large"), { status: 413 }));
+      if (size > limit + discardLimit) {
+        reject(tooLarge());
         request.destroy();
         return;
       }
-      chunks.push(chunk);
+      if (size <= limit) chunks.push(chunk);
     });
-    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("end", () => {
+      if (size > limit) reject(tooLarge());
+      else resolve(Buffer.concat(chunks).toString("utf8"));
+    });
     request.on("error", reject);
   });
 }
@@ -277,13 +319,14 @@ async function readJson(request) {
   }
 }
 
-function sendJson(response, status, payload, cookies = []) {
+function sendJson(response, status, payload, cookies = [], { close = false } = {}) {
   const headers = {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   };
   if (cookies.length) headers["set-cookie"] = cookies;
+  if (close) headers.connection = "close";
   response.writeHead(status, headers);
   response.end(JSON.stringify(payload));
 }
@@ -294,7 +337,12 @@ function cookieValue(request, name) {
     const index = part.indexOf("=");
     if (index === -1) continue;
     if (part.slice(0, index).trim() === name) {
-      return decodeURIComponent(part.slice(index + 1).trim());
+      // A malformed cookie (bad %-escape) counts as no cookie: the request is simply signed out.
+      try {
+        return decodeURIComponent(part.slice(index + 1).trim());
+      } catch {
+        return "";
+      }
     }
   }
   return "";
@@ -316,6 +364,8 @@ function publicUser(session) {
     userId: session.userId,
     fullName: session.fullName,
     peer: session.peer || null,
+    // The browser checks files against the same limits before uploading (the server re-checks).
+    limits: { maxUploadMb: MAX_UPLOAD_MB, blockedExtensions: [...BLOCKED_EXTENSIONS] },
   };
 }
 
@@ -408,6 +458,9 @@ const TITLE_BY_EMAIL = new Map([
   ["tongsini@localhost.localdomain", "\uC8FC\uBB34\uAD00"],
   ["gwanjenam@localhost.localdomain", "\uC8FC\uBB34\uAD00"],
 ]);
+// Directory title = "직위 · 부서" from Zulip custom profile fields.
+// The older single "직책" field and TITLE_BY_EMAIL remain as fallbacks.
+const TITLE_FIELD_NAMES = { position: "직위", department: "부서", legacy: "직책" };
 let titleFieldIdCache = null;
 
 function personEmail(user) {
@@ -441,33 +494,41 @@ async function fetchMembers(session) {
   return result.json.members;
 }
 
-async function titleFieldId(session) {
+async function titleFieldIds(session) {
   if (titleFieldIdCache) return titleFieldIdCache;
+  const ids = {};
   try {
     const result = await zulip("GET", "/api/v1/realm/profile_fields", { auth: basic(session) });
     const fields = Array.isArray(result.json?.custom_fields) ? result.json.custom_fields : [];
-    const field = fields.find((item) => item.type === 1 && item.name === "\uC9C1\uCC45");
-    if (field?.id) titleFieldIdCache = field.id;
+    for (const [key, name] of Object.entries(TITLE_FIELD_NAMES)) {
+      const field = fields.find((item) => item.type === 1 && item.name === name);
+      if (field?.id) ids[key] = field.id;
+    }
+    // Cache only a successful read so a transient failure is retried next time.
+    if (result.json?.result === "success") titleFieldIdCache = ids;
   } catch {
-    // The email map below covers the case where this realm field cannot be read.
+    // The email map below covers the case where the realm fields cannot be read.
   }
-  return titleFieldIdCache;
+  return ids;
 }
 
-function directoryTitle(user, fieldId) {
-  const data = user.profile_data;
-  const fromProfile = fieldId && data ? profileText(data[String(fieldId)]) : "";
-  if (fromProfile) return fromProfile;
+function directoryTitle(user, fieldIds) {
+  const data = user.profile_data || {};
+  const read = (id) => (id ? profileText(data[String(id)]) : "");
+  const combined = [read(fieldIds.position), read(fieldIds.department)].filter(Boolean).join(" \u00B7 ");
+  if (combined) return combined;
+  const legacy = read(fieldIds.legacy);
+  if (legacy) return legacy;
   return TITLE_BY_EMAIL.get(personEmail(user)) || "";
 }
 
 async function listDirectory(session) {
   const members = await fetchMembers(session);
-  const fieldId = await titleFieldId(session);
+  const fieldIds = await titleFieldIds(session);
   const people = members
     .filter((user) => !user.is_bot && user.is_active !== false)
     .map((user) => {
-      const title = directoryTitle(user, fieldId);
+      const title = directoryTitle(user, fieldIds);
       const avatarPath = localAvatarPath(user.avatar_url);
       return {
         userId: user.user_id,
@@ -526,69 +587,102 @@ async function personById(session, userId) {
   return person;
 }
 
-async function handleMessages(session, view, userId) {
-  const peer = view === "dm" ? await personById(session, userId) : null;
-  await enqueue(session, () => ensureQueue(session));
-  const narrow = view === "dm"
-    ? [{ operator: "dm", operand: [peer.userId] }]
-    : [{ operator: "channel", operand: CHANNEL }];
-  const query = new URLSearchParams({
-    anchor: "newest",
-    num_before: "100",
-    num_after: "0",
-    apply_markdown: "false",
-    narrow: JSON.stringify(narrow),
-  });
-  const result = await zulip("GET", `/api/v1/messages?${query}`, { auth: basic(session) });
-  if (result.json?.result !== "success" || !Array.isArray(result.json.messages)) {
-    const error = new Error("messages");
-    error.status = result.status === 401 ? 401 : 502;
-    throw error;
+function parseBefore(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0 || String(id) !== String(value)) {
+    throw httpError(400, "불러올 위치가 올바르지 않습니다.", "before");
   }
-  let messages = result.json.messages
-    .map((message) => normalize(message, session))
-    .filter(Boolean)
-    .sort((a, b) => a.id - b.id);
-  if (view === "dm") {
-    const notes = await noteRecords(session);
-    const noteIds = new Set(notes.map((note) => note.messageId));
-    messages = messages.filter((message) => !noteIds.has(message.id));
+  return id;
+}
+
+async function handleMessages(session, view, params) {
+  const before = parseBefore(params.get("before"));
+  const peer = view === "dm" ? await personById(session, params.get("userId")) : null;
+  const group = view === "group" ? await groupById(session, params.get("groupId")) : null;
+  await enqueue(session, () => ensureQueue(session));
+  let narrow = [{ operator: "channel", operand: CHANNEL }];
+  if (peer) narrow = [{ operator: "dm", operand: [peer.userId] }];
+  if (group) narrow = [{ operator: "channel", operand: group.groupId }];
+  const noteIds = view === "dm" ? new Set((await noteRecords(session)).map((note) => note.messageId)) : new Set();
+  // Notes are hidden from the 1:1 view. A page made only of notes would come back empty with
+  // hasOlder:true and leave the browser no `before` to continue from, so keep reading older
+  // pages (bounded) until something is visible or the start of the conversation is reached.
+  let anchor = before ? String(before) : "newest";
+  let messages = [];
+  let hasOlder = false;
+  for (let round = 0; round < MAX_EMPTY_PAGES; round += 1) {
+    const query = new URLSearchParams({
+      anchor,
+      num_before: String(PAGE_SIZE),
+      num_after: "0",
+      include_anchor: "false",
+      apply_markdown: "false",
+      narrow: JSON.stringify(narrow),
+    });
+    const result = await zulip("GET", `/api/v1/messages?${query}`, { auth: basic(session) });
+    if (result.json?.result !== "success" || !Array.isArray(result.json.messages)) {
+      const error = new Error("messages");
+      error.status = result.status === 401 ? 401 : 502;
+      throw error;
+    }
+    const raw = result.json.messages;
+    hasOlder = result.json.found_oldest === false && raw.length > 0;
+    // Also hide notes still in flight (sent, index not yet written).
+    if (view === "dm") for (const message of raw) if (pendingNoteRecord(message)) noteIds.add(message.id);
+    messages = raw
+      .map((message) => normalize(message, session))
+      .filter((message) => message && !noteIds.has(message.id))
+      .sort((a, b) => a.id - b.id);
+    if (messages.length || !hasOlder) break;
+    anchor = String(Math.min(...raw.map((message) => message.id)));
   }
   return {
     view,
-    channel: view === "dm" ? null : CHANNEL,
+    channel: view === "general" ? CHANNEL : null,
     peer,
-    hasOlder: result.json.found_oldest === false,
+    group,
+    hasOlder,
     messages,
   };
 }
 
 async function handleSend(session, request) {
   const body = await readJson(request);
-  const view = body.view === "dm" ? "dm" : "general";
-  const content = typeof body.content === "string" ? body.content.trim() : "";
-  if (!content) {
-    const error = new Error("empty");
-    error.status = 400;
-    error.publicMessage = "\uBA54\uC2DC\uC9C0\uB97C \uC785\uB825\uD558\uC138\uC694.";
-    throw error;
+  const view = body.view === "dm" || body.view === "group" ? body.view : "general";
+  const text = typeof body.content === "string" ? body.content.trim() : "";
+  const files = attachmentLines(body.attachments);
+  if (!files) throw httpError(400, "\uCCA8\uBD80 \uD30C\uC77C\uC744 \uD655\uC778\uD558\uC138\uC694.", "attachments");
+  if (!text && !files.lines.length) {
+    throw httpError(400, "\uBA54\uC2DC\uC9C0\uB97C \uC785\uB825\uD558\uC138\uC694.", "empty");
   }
+  const content = [text, ...files.lines].filter(Boolean).join("\n");
   if (content.length > 10000) {
-    const error = new Error("long");
-    error.status = 400;
-    error.publicMessage = "\uBA54\uC2DC\uC9C0\uAC00 \uB108\uBB34 \uAE41\uB2C8\uB2E4.";
-    throw error;
+    throw httpError(400, "\uBA54\uC2DC\uC9C0\uAC00 \uB108\uBB34 \uAE41\uB2C8\uB2E4.", "long");
   }
   const peer = view === "dm" ? await personById(session, body.userId) : null;
-  const form = view === "dm"
-    ? { type: "direct", to: JSON.stringify([peer.userId]), content }
-    : { type: "stream", to: CHANNEL, topic: TOPIC, content };
-  const sent = await zulip("POST", "/api/v1/messages", { auth: basic(session), form });
+  const group = view === "group" ? await groupById(session, body.groupId) : null;
+  if (body.note === true && !peer) throw httpError(400, "\uC0AC\uC6A9\uC790\uB97C \uC120\uD0DD\uD558\uC138\uC694.", "user");
+  let form = { type: "stream", to: CHANNEL, topic: TOPIC, content };
+  if (peer) form = { type: "direct", to: JSON.stringify([peer.userId]), content };
+  if (group) form = { type: "stream", to: String(group.groupId), topic: TOPIC, content };
+  // Register the note before Zulip delivers it, so the receiver's event poll classifies it
+  // as a note even if it arrives before the index write below finishes.
+  const pendingKey = body.note === true ? addPendingNote(session.userId, peer.userId, content) : "";
+  let sent;
+  try {
+    sent = await zulip("POST", "/api/v1/messages", { auth: basic(session), form });
+  } catch (error) {
+    dropPendingNote(pendingKey);
+    throw error;
+  }
   if (sent.json?.result !== "success" || !sent.json.id) {
+    dropPendingNote(pendingKey);
     const error = new Error("send");
     error.status = sent.status === 401 ? 401 : 502;
     throw error;
   }
+  bindPendingNote(pendingKey, sent.json.id);
   const one = await zulip("GET", `/api/v1/messages/${sent.json.id}?apply_markdown=false`, {
     auth: basic(session),
   });
@@ -599,18 +693,16 @@ async function handleSend(session, request) {
     senderName: session.fullName,
     senderEmail: session.email,
     topic: view === "dm" ? "" : TOPIC,
-    content,
+    content: text,
     timestamp: Math.floor(Date.now() / 1000),
-    kind: view === "dm" ? "dm" : "channel",
-    peerId: view === "dm" ? peer.userId : null,
+    kind: view === "dm" ? "dm" : view === "group" ? "group" : "channel",
+    peerId: peer ? peer.userId : null,
+    groupId: group ? group.groupId : null,
+    attachments: [],
   };
+  // The sender knows sizes and types that Zulip's message text does not carry.
+  message.attachments = files.attachments;
   if (body.note === true) {
-    if (!peer) {
-      const error = new Error("user");
-      error.status = 400;
-      error.publicMessage = "사용자를 선택하세요.";
-      throw error;
-    }
     try {
       await noteStore.add({
         messageId: message.id,
@@ -620,15 +712,61 @@ async function handleSend(session, request) {
       });
     } catch (error) {
       throw asNotesError(error);
+    } finally {
+      // Indexed now (or failed): the index is the source of truth from here on.
+      dropPendingNote(pendingKey);
     }
     message.note = true;
   }
   return message;
 }
 
-async function classifyEvents(session, messages, reset) {
+// ---- Notes in flight: sent to Zulip but not yet written to the note index. ----
+const PENDING_NOTE_MS = 60 * 1000;
+const pendingNotes = new Map(); // key -> { senderId, recipientId, hash, messageId, expires }
+
+function contentHash(content) {
+  return createHash("sha256").update(String(content)).digest("hex");
+}
+
+function addPendingNote(senderId, recipientId, content) {
+  const now = Date.now();
+  for (const [key, entry] of pendingNotes) if (entry.expires < now) pendingNotes.delete(key);
+  const key = randomBytes(8).toString("hex");
+  pendingNotes.set(key, { senderId, recipientId, hash: contentHash(content), messageId: null, expires: now + PENDING_NOTE_MS });
+  return key;
+}
+
+function bindPendingNote(key, messageId) {
+  const entry = key ? pendingNotes.get(key) : null;
+  if (entry) entry.messageId = messageId;
+}
+
+function dropPendingNote(key) {
+  if (key) pendingNotes.delete(key);
+}
+
+// For a raw Zulip 1:1 message: the note record it will get, if it is a note still in flight.
+function pendingNoteRecord(message) {
+  if (!Array.isArray(message?.display_recipient) || message.display_recipient.length !== 2) return null;
+  const senderId = message.sender_id;
+  const recipientId = message.display_recipient.map((person) => person.id).find((id) => id !== senderId);
+  const hash = contentHash(message.content);
+  const now = Date.now();
+  for (const entry of pendingNotes.values()) {
+    if (entry.expires < now || entry.senderId !== senderId || entry.recipientId !== recipientId) continue;
+    if (entry.messageId !== null ? entry.messageId !== message.id : entry.hash !== hash) continue;
+    return { messageId: message.id, senderId, recipientId, timestamp: message.timestamp };
+  }
+  return null;
+}
+
+async function classifyEvents(session, messages, reset, inFlight = []) {
   try {
-    const notes = await noteStore.listForUser(session.userId);
+    const indexed = await noteStore.listForUser(session.userId);
+    const known = new Set(indexed.map((note) => note.messageId));
+    // In-flight notes look exactly like indexed ones to the browser: listed in `notes`, absent from `messages`.
+    const notes = [...indexed, ...inFlight.filter((note) => !known.has(note.messageId))];
     const ids = new Set(notes.map((note) => note.messageId));
     return {
       messages: messages.filter((message) => message.kind !== "dm" || !ids.has(message.id)),
@@ -668,7 +806,7 @@ async function handleEvents(session, signal) {
       signal,
     });
   } catch (error) {
-    if (error.timeout) return { messages: [], reset: false };
+    if (error.timeout) return { messages: [], reset: false, groupsChanged: false };
     throw error;
   }
   if (result.json?.code === "BAD_EVENT_QUEUE_ID") {
@@ -678,26 +816,293 @@ async function handleEvents(session, signal) {
         session.lastEventId = -1;
       }
     });
-    return await classifyEvents(session, [], true);
+    // Events may have been missed while the queue was gone, so groups are stale too.
+    return { ...(await classifyEvents(session, [], true)), groupsChanged: true };
   }
   if (result.json?.result !== "success") {
     const error = new Error("events");
     error.status = result.status === 401 ? 401 : 502;
     throw error;
   }
+  const events = result.json.events || [];
+  // Added/removed/renamed, or members joined/left one of my channels.
+  const groupsChanged = events.some((event) => event.type === "subscription" || event.type === "stream");
+  const unknownChannel = events.some((event) => event.type === "message"
+    && event.message?.type === "stream" && !isGeneral(event.message)
+    && !session.groupIds?.has(event.message.stream_id));
+  // Refresh my group list first so a message in a group I was just added to is kept.
+  if (groupsChanged || unknownChannel || !session.groupIds) {
+    try {
+      await listGroups(session);
+    } catch (error) {
+      if (error.status === 401) throw error;
+    }
+  }
   const messages = [];
   let maxId = lastEventId;
-  for (const event of result.json.events || []) {
+  const inFlight = [];
+  for (const event of events) {
     if (Number.isInteger(event.id) && event.id > maxId) maxId = event.id;
     if (event.type === "message" && event.message) {
       const normalized = normalize(event.message, session);
       if (normalized) messages.push(normalized);
+      const pending = normalized?.kind === "dm" ? pendingNoteRecord(event.message) : null;
+      if (pending) inFlight.push(pending);
     }
   }
   await enqueue(session, async () => {
     if (session.queueId === queueId && maxId > session.lastEventId) session.lastEventId = maxId;
   });
-  return await classifyEvents(session, messages, false);
+  return { ...(await classifyEvents(session, messages, false, inFlight)), groupsChanged };
+}
+
+// ---- B. Group rooms: one invite-only Zulip channel per group, topic TOPIC. ----
+const GROUP_NAME_MAX = 60;
+
+function zulipFailure(result, fallback) {
+  if (result.status === 401) return httpError(401, "", "auth");
+  const message = typeof result.json?.msg === "string" ? result.json.msg : "";
+  console.error("[sangsang] zulip refused", result.status, result.json?.code || "", message.slice(0, 200));
+  return httpError(502, fallback, "zulip");
+}
+
+function groupFromSubscription(sub) {
+  return {
+    groupId: sub.stream_id,
+    name: sub.name,
+    memberIds: Array.isArray(sub.subscribers) ? [...sub.subscribers].sort((a, b) => a - b) : [],
+  };
+}
+
+async function listGroups(session) {
+  const result = await zulip("GET", "/api/v1/users/me/subscriptions?include_subscribers=true", { auth: basic(session) });
+  if (result.json?.result !== "success" || !Array.isArray(result.json.subscriptions)) {
+    throw zulipFailure(result, "그룹 목록을 읽지 못했습니다.");
+  }
+  const groups = result.json.subscriptions
+    .filter((sub) => sub.invite_only && String(sub.name).toLowerCase() !== CHANNEL)
+    .map(groupFromSubscription)
+    .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  // normalize() uses this to show only my group rooms; other channels are ignored.
+  session.groupIds = new Set(groups.map((group) => group.groupId));
+  return { groups };
+}
+
+function forgetGroup(session, groupId) {
+  session.groupIds?.delete(groupId);
+}
+
+async function groupById(session, value) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) throw httpError(400, "그룹을 선택하세요.", "group");
+  const { groups } = await listGroups(session);
+  const group = groups.find((item) => item.groupId === id);
+  if (!group) throw httpError(404, "그룹을 찾지 못했습니다.", "group");
+  return group;
+}
+
+async function validPeopleIds(session, values) {
+  if (!Array.isArray(values) || values.length > 200) return [];
+  const { people } = await listDirectory(session);
+  const known = new Set(people.map((person) => person.userId));
+  return [...new Set(values.map(Number))].filter((id) => known.has(id) && id !== session.userId);
+}
+
+function cleanGroupName(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, GROUP_NAME_MAX);
+}
+
+async function defaultGroupName(session, memberIds) {
+  const { people } = await listDirectory(session);
+  const names = memberIds
+    .filter((id) => id !== session.userId)
+    .map((id) => people.find((person) => person.userId === id)?.fullName)
+    .filter(Boolean);
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 3).join(", ")} 외 ${names.length - 3}명`;
+}
+
+// Channel names are unique per realm (including channels this user cannot see), so add " (2)" etc. on a clash.
+function nameCandidates(name) {
+  const list = [name];
+  for (let n = 2; n <= 20; n += 1) {
+    const suffix = ` (${n})`;
+    list.push(`${name.slice(0, GROUP_NAME_MAX - suffix.length)}${suffix}`);
+  }
+  return list;
+}
+
+// "already exists": name taken; "Unable to access channel": a private channel this user cannot see has it.
+const CHANNEL_EXISTS = /already exists|Unable to access channel|이미 존재/i;
+
+// True when a channel with this name is visible to the user (own groups, any public channel).
+// Subscribing to such a name would join that existing channel instead of creating a group.
+async function channelNameVisible(session, name) {
+  const result = await zulip("GET", `/api/v1/get_stream_id?${new URLSearchParams({ stream: name })}`, { auth: basic(session) });
+  if (result.json?.result === "success") return true;
+  if (result.status === 400) return false;
+  throw zulipFailure(result, "그룹을 만들지 못했습니다.");
+}
+
+// Every member may rename and invite: the member list doubles as the channel's administrator group.
+function adminGroup(memberIds) {
+  return JSON.stringify({ direct_members: memberIds, direct_subgroups: [] });
+}
+
+async function createGroup(session, body) {
+  const others = await validPeopleIds(session, body.memberIds);
+  if (!others.length) throw httpError(400, "함께할 직원을 한 명 이상 고르세요.", "members");
+  const memberIds = [session.userId, ...others];
+  const name = cleanGroupName(body.name) || cleanGroupName(await defaultGroupName(session, memberIds));
+  let created = "";
+  for (const candidate of nameCandidates(name)) {
+    if (await channelNameVisible(session, candidate)) continue;
+    const result = await zulip("POST", "/api/v1/users/me/subscriptions", {
+      auth: basic(session),
+      form: {
+        subscriptions: JSON.stringify([{ name: candidate, description: "" }]),
+        principals: JSON.stringify(memberIds),
+        invite_only: "true",
+        history_public_to_subscribers: "true",
+        announce: "false",
+        can_administer_channel_group: adminGroup(memberIds),
+        can_add_subscribers_group: adminGroup(memberIds),
+      },
+    });
+    if (result.json?.result === "success") {
+      // The pre-check passed, so this should be new. If the channel turned out to exist
+      // (created in between), stop rather than treat someone else's channel as our group.
+      const already = Object.values(result.json.already_subscribed || {}).some((names) => names.includes(candidate));
+      if (already) throw httpError(409, "같은 이름의 대화방이 있습니다. 다시 시도하세요.", "name");
+      created = candidate;
+      break;
+    }
+    if (!CHANNEL_EXISTS.test(String(result.json?.msg || ""))) {
+      throw zulipFailure(result, "그룹을 만들지 못했습니다.");
+    }
+  }
+  if (!created) throw httpError(400, "같은 이름의 그룹이 많습니다. 다른 이름을 쓰세요.", "name");
+  const { groups } = await listGroups(session);
+  const group = groups.find((item) => item.name === created);
+  if (!group) throw httpError(502, "그룹을 만들지 못했습니다.", "group");
+  return group;
+}
+
+async function renameGroup(session, groupId, body) {
+  const group = await groupById(session, groupId);
+  const name = cleanGroupName(body.name);
+  if (!name) throw httpError(400, "그룹 이름을 입력하세요.", "name");
+  if (name !== group.name) {
+    const result = await zulip("PATCH", `/api/v1/streams/${group.groupId}`, { auth: basic(session), form: { new_name: name } });
+    if (result.json?.result !== "success") {
+      if (CHANNEL_EXISTS.test(String(result.json?.msg || ""))) {
+        throw httpError(400, "같은 이름의 대화방이 있습니다. 다른 이름을 쓰세요.", "name");
+      }
+      throw zulipFailure(result, "그룹 이름을 바꾸지 못했습니다.");
+    }
+  }
+  return await groupById(session, group.groupId);
+}
+
+async function addGroupMembers(session, groupId, body) {
+  const group = await groupById(session, groupId);
+  const ids = (await validPeopleIds(session, body.userIds)).filter((id) => !group.memberIds.includes(id));
+  if (!ids.length) throw httpError(400, "초대할 직원을 고르세요.", "members");
+  const result = await zulip("POST", "/api/v1/users/me/subscriptions", {
+    auth: basic(session),
+    form: { subscriptions: JSON.stringify([{ name: group.name }]), principals: JSON.stringify(ids) },
+  });
+  if (result.json?.result !== "success") throw zulipFailure(result, "직원을 초대하지 못했습니다.");
+  await setGroupAdmins(session, group.groupId, [...group.memberIds, ...ids]);
+  return await groupById(session, group.groupId);
+}
+
+async function setGroupAdmins(session, groupId, memberIds) {
+  const value = adminGroup([...new Set(memberIds)]);
+  const result = await zulip("PATCH", `/api/v1/streams/${groupId}`, {
+    auth: basic(session),
+    form: {
+      can_administer_channel_group: JSON.stringify({ new: JSON.parse(value) }),
+      can_add_subscribers_group: JSON.stringify({ new: JSON.parse(value) }),
+    },
+  });
+  // Not fatal: membership already changed; only rename/invite rights of the new members lag.
+  if (result.json?.result !== "success") zulipFailure(result, "");
+}
+
+async function leaveGroup(session, groupId) {
+  const group = await groupById(session, groupId);
+  const result = await zulip("DELETE", "/api/v1/users/me/subscriptions", {
+    auth: basic(session),
+    form: { subscriptions: JSON.stringify([group.name]) },
+  });
+  if (result.json?.result !== "success") throw zulipFailure(result, "그룹에서 나가지 못했습니다.");
+  // Only after leaving succeeded: drop my admin rights (channel admins may still edit after unsubscribing).
+  await setGroupAdmins(session, group.groupId, group.memberIds.filter((id) => id !== session.userId));
+  forgetGroup(session, group.groupId);
+  return { ok: true };
+}
+
+// ---- C. Files ----
+async function handleUpload(session, request, response) {
+  const name = cleanFileName(request.headers["x-file-name"]);
+  if (!name) throw httpError(400, "파일 이름이 없습니다.", "name");
+  if (isBlockedName(name)) throw httpError(415, "이 형식의 파일은 보낼 수 없습니다.", "type");
+  const sizeHeader = request.headers["content-length"];
+  const size = Number(sizeHeader);
+  if (sizeHeader === undefined || !Number.isSafeInteger(size)) {
+    throw httpError(411, "파일 크기를 알 수 없습니다. 다시 시도하세요.", "length");
+  }
+  const tooLarge = `파일은 ${MAX_UPLOAD_MB}MB까지 보낼 수 있습니다.`;
+  if (size > MAX_UPLOAD_BYTES) throw httpError(413, tooLarge, "size");
+  if (size === 0) throw httpError(400, "빈 파일은 보낼 수 없습니다.", "empty");
+  const declared = String(request.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  const type = /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(declared) ? declared : guessType(name) || "application/octet-stream";
+  const result = await zulipFiles.upload(request, { auth: basic(session), name, type, size, limit: MAX_UPLOAD_BYTES });
+  if (result.status === 413) throw httpError(413, tooLarge, "size");
+  if (result.status === 401) throw httpError(401, "", "auth");
+  const uploadPath = canonicalUploadPath(result.json?.url);
+  if (result.status !== 200 || !uploadPath) {
+    console.error("[sangsang] upload refused", result.status, String(result.error || "").slice(0, 200));
+    throw httpError(502, "파일을 올리지 못했습니다.", "upload");
+  }
+  // Zulip's tus hook stores the file under sanitize_name(strict=True), which drops every
+  // non-ASCII character ("회의 자료.txt" -> ".txt"). `url` carries the original name for downloads.
+  return { file: { name, size, type, path: uploadPath, url: attachmentUrl(uploadPath, name) } };
+}
+
+// ---- D. Presence ----
+async function reportPresence(session, body) {
+  const status = body.status === "idle" ? "idle" : body.status === "active" ? "active" : "";
+  if (!status) throw httpError(400, "상태 값을 확인하세요.", "status");
+  const result = await zulip("POST", "/api/v1/users/me/presence", {
+    auth: basic(session),
+    form: { status, ping_only: "true" },
+  });
+  if (result.json?.result !== "success") throw zulipFailure(result, "상태를 보내지 못했습니다.");
+  return { ok: true };
+}
+
+async function readPresence(session) {
+  const [members, result] = await Promise.all([
+    fetchMembers(session),
+    zulip("GET", "/api/v1/realm/presence", { auth: basic(session) }),
+  ]);
+  if (result.json?.result !== "success") throw zulipFailure(result, "근무 상태를 읽지 못했습니다.");
+  const presences = result.json.presences || {};
+  const serverNow = Number(result.json.server_timestamp) || Date.now() / 1000;
+  const presence = {};
+  for (const user of members) {
+    if (user.is_bot || user.is_active === false) continue;
+    const entry = presences[user.email] || presences[String(user.user_id)];
+    const aggregated = entry?.aggregated;
+    const age = aggregated ? serverNow - Number(aggregated.timestamp) : Infinity;
+    let status = "offline";
+    if (age <= PRESENCE_OFFLINE_SECONDS) status = aggregated.status === "active" ? "active" : "idle";
+    presence[String(user.user_id)] = status;
+  }
+  return { presence };
 }
 
 async function handleNoteMessages(session) {
@@ -721,7 +1126,15 @@ async function handleNoteMessages(session) {
 }
 
 async function onRequest(request, response) {
-  const url = new URL(request.url, `http://${request.headers.host || "127.0.0.1"}`);
+  // Parse against a fixed base: a request line like "//" or a bad Host header must not
+  // throw outside the try below (that crashed the whole process).
+  let url;
+  try {
+    url = new URL(request.url, "http://127.0.0.1");
+  } catch {
+    sendJson(response, 400, { error: "요청을 확인하세요." });
+    return;
+  }
   try {
     if (request.method === "GET" && PUBLIC_FILES.has(url.pathname)) {
       const filename = PUBLIC_FILES.get(url.pathname);
@@ -809,7 +1222,13 @@ async function onRequest(request, response) {
         sendJson(response, 401, { error: "\uB85C\uADF8\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4." });
         return;
       }
-      await handleAvatar(session, decodeURIComponent(url.pathname.slice("/api/avatar/".length)), response);
+      let avatarId = "";
+      try {
+        avatarId = decodeURIComponent(url.pathname.slice("/api/avatar/".length));
+      } catch {
+        avatarId = ""; // bad %-escape -> handleAvatar answers 404
+      }
+      await handleAvatar(session, avatarId, response);
       return;
     }
 
@@ -829,8 +1248,86 @@ async function onRequest(request, response) {
         sendJson(response, 401, { error: "로그인이 필요합니다." });
         return;
       }
-      const view = url.searchParams.get("view") === "dm" ? "dm" : "general";
-      sendJson(response, 200, await handleMessages(session, view, url.searchParams.get("userId")));
+      const requested = url.searchParams.get("view");
+      const view = requested === "dm" || requested === "group" ? requested : "general";
+      sendJson(response, 200, await handleMessages(session, view, url.searchParams));
+      return;
+    }
+
+    if (url.pathname === "/api/groups" || url.pathname.startsWith("/api/groups/")) {
+      const session = sessionFrom(request);
+      if (!session) {
+        sendJson(response, 401, { error: "로그인이 필요합니다." });
+        return;
+      }
+      if (request.method !== "GET" && !sameOrigin(request)) {
+        sendJson(response, 403, { error: "이 출처에서는 요청할 수 없습니다." });
+        return;
+      }
+      const match = url.pathname.match(/^\/api\/groups(?:\/(\d+)(\/members(?:\/me)?)?)?$/);
+      const [, groupId, sub] = match || [];
+      if (match && !groupId && request.method === "GET") {
+        sendJson(response, 200, await listGroups(session));
+        return;
+      }
+      if (match && !groupId && request.method === "POST") {
+        sendJson(response, 200, { group: await createGroup(session, await readJson(request)) });
+        return;
+      }
+      if (match && groupId && !sub && request.method === "PATCH") {
+        sendJson(response, 200, { group: await renameGroup(session, groupId, await readJson(request)) });
+        return;
+      }
+      if (match && groupId && sub === "/members" && request.method === "POST") {
+        sendJson(response, 200, { group: await addGroupMembers(session, groupId, await readJson(request)) });
+        return;
+      }
+      if (match && groupId && sub === "/members/me" && request.method === "DELETE") {
+        sendJson(response, 200, await leaveGroup(session, groupId));
+        return;
+      }
+      sendJson(response, 404, { error: "없는 주소입니다." });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/files") {
+      const session = sessionFrom(request);
+      if (!session) {
+        sendJson(response, 401, { error: "로그인이 필요합니다." }, [], { close: true });
+        return;
+      }
+      sendJson(response, 200, await handleUpload(session, request, response));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/files/")) {
+      const session = sessionFrom(request);
+      if (!session) {
+        sendJson(response, 401, { error: "로그인이 필요합니다." });
+        return;
+      }
+      const raw = request.url.split("?")[0].slice("/api/files".length);
+      const uploadPath = canonicalUploadPath(raw);
+      const found = uploadPath
+        && await zulipFiles.download(uploadPath, {
+          auth: basic(session),
+          inline: url.searchParams.get("inline") === "1",
+          name: url.searchParams.get("name") || "",
+        }, response);
+      if (!found && !response.headersSent) sendJson(response, 404, { error: "파일을 찾지 못했습니다." });
+      return;
+    }
+
+    if (url.pathname === "/api/presence" && (request.method === "GET" || request.method === "POST")) {
+      const session = sessionFrom(request);
+      if (!session) {
+        sendJson(response, 401, { error: "로그인이 필요합니다." });
+        return;
+      }
+      const payload = request.method === "POST"
+        ? await reportPresence(session, await readJson(request))
+        : await readPresence(session);
+      sendJson(response, 200, payload);
       return;
     }
 
@@ -863,6 +1360,11 @@ async function onRequest(request, response) {
     sendJson(response, 404, { error: "없는 주소입니다." });
   } catch (error) {
     if (error?.aborted || response.writableEnded) return;
+    // A streamed response (file download) already started: no JSON error can follow.
+    if (response.headersSent) {
+      response.destroy();
+      return;
+    }
     const status = error.status || (error.zulipStatus === 401 ? 401 : 502);
     if (status === 401) {
       sendJson(response, 401, { error: "로그인이 필요합니다." }, [sessionCookie("", 0)]);
@@ -872,8 +1374,11 @@ async function onRequest(request, response) {
       sendJson(response, 503, { error: error.publicMessage || NOTES_ERROR });
       return;
     }
-    if (status === 400 || status === 413) {
-      sendJson(response, status === 413 ? 413 : 400, { error: error.publicMessage || "요청을 확인하세요." });
+    if ([400, 404, 409, 411, 413, 415, 429].includes(status)) {
+      // An upload refused before its body was read: close the connection instead of draining it.
+      const close = status === 413
+        || (url.pathname === "/api/files" && request.method === "POST" && !request.readableEnded);
+      sendJson(response, status, { error: error.publicMessage || "요청을 확인하세요." }, [], { close });
       return;
     }
     console.error("[sangsang] request failed", request.method, url.pathname, error.code || error.message);
@@ -883,11 +1388,28 @@ async function onRequest(request, response) {
 
 const servers = [];
 for (const host of HOSTS) {
-  const server = createServer(onRequest);
-  server.requestTimeout = 90000;
+  // Safety net: a rejection escaping onRequest must never take the whole process down.
+  const server = createServer((request, response) => {
+    onRequest(request, response).catch((error) => {
+      console.error("[sangsang] unhandled request error", request.method, error?.code || error?.message);
+      if (!response.headersSent) {
+        try {
+          sendJson(response, 500, { error: "요청을 처리하지 못했습니다." });
+        } catch {
+          response.destroy();
+        }
+      } else {
+        response.destroy();
+      }
+    });
+  });
+  // No cap on total request time: a 100 MB upload on a slow link can take minutes.
+  // Stalled connections are cut by the idle timeout instead (any bytes reset it;
+  // /api/events answers within ~55 s, so it is never idle that long).
+  server.requestTimeout = 0;
   server.headersTimeout = 90000;
   server.keepAliveTimeout = 75000;
-  server.timeout = 0;
+  server.timeout = 120000;
   server.on("error", (error) => {
     console.error(`[sangsang] ${host} listen failed: ${error.code || error.message}`);
   });
