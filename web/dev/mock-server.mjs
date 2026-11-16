@@ -17,6 +17,8 @@ import { BLOCKED_EXTENSIONS, cleanFileName, contentDisposition, downloadName, is
 const root = process.argv[2] || fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.argv[3] || 43190);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) > 0 ? Number(process.env.MAX_UPLOAD_MB) : 100;
+// 실제 서버와 같은 규칙: 정확히 "1"일 때만 켠다.
+const APP_ONLY_LOGIN = process.env.APP_ONLY_LOGIN === "1";
 const PAGE = 100;
 const now = Math.floor(Date.now() / 1000);
 
@@ -239,6 +241,10 @@ http.createServer(async (req, res) => {
   const cid = clientId(req, res);
   clientFor(cid);
   try {
+    // M14: 실제 서버와 같이 APP_ONLY_LOGIN=1이면 데스크톱 앱 헤더 없는 로그인을 거부한다.
+    if (p === "/api/login" && method === "POST" && APP_ONLY_LOGIN && req.headers["x-sangsangtalk-client"] !== "desktop") {
+      return json(res, 403, { error: "상상톡 로그인은 데스크톱 앱에서만 할 수 있습니다." });
+    }
     if (p === "/api/session" || p === "/api/login") return json(res, 200, { ...me, peer: null, limits });
     if (p === "/api/session/status") return json(res, 200, { signedIn: true });
     if (p === "/api/logout") return json(res, 200, { ok: true });
@@ -451,4 +457,4 @@ http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end();
   }
-}).listen(port, "127.0.0.1", () => console.log(`mock on ${port} (MAX_UPLOAD_MB=${MAX_UPLOAD_MB})`));
+}).listen(port, "127.0.0.1", () => console.log(`mock on ${port} (MAX_UPLOAD_MB=${MAX_UPLOAD_MB}${APP_ONLY_LOGIN ? ", APP_ONLY_LOGIN=1" : ""})`));

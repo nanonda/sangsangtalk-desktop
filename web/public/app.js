@@ -2651,9 +2651,12 @@ $("#login-form").addEventListener("submit", async (event) => {
   $("#email").disabled = true;
   $("#password").disabled = true;
   try {
+    // 데스크톱 앱(Tauri) 안에서는 앱 표시 헤더를 붙인다. APP_ONLY_LOGIN=1이면 서버가 이 헤더 없는 로그인을 403으로 거부한다.
+    const headers = { "content-type": "application/json" };
+    if (window.__TAURI_INTERNALS__) headers["x-sangsangtalk-client"] = "desktop";
     const response = await fetch("/api/login", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ email, password }),
     });
     const data = await response.json().catch(() => ({}));

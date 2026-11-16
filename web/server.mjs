@@ -40,6 +40,7 @@ const sessionStore = createSessionStore({
 });
 const noteStore = createNoteStore(path.join(path.dirname(fileURLToPath(import.meta.url)), "data", "notes.json"));
 const NOTES_ERROR = "쪽지 기록을 읽지 못했습니다. 다시 시도하세요.";
+const APP_ONLY_LOGIN_MESSAGE = "상상톡 로그인은 데스크톱 앱에서만 할 수 있습니다.";
 const PAGE_SIZE = 100;
 const MAX_EMPTY_PAGES = 20; // up to 2,000 hidden (note) messages skipped per request
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) > 0 ? Number(process.env.MAX_UPLOAD_MB) : 100;
@@ -1255,6 +1256,11 @@ async function onRequest(request, response) {
     }
 
     if (request.method === "POST" && url.pathname === "/api/login") {
+      // M14: staff sign in from the desktop app only. The header can be forged — this guides, it does not secure.
+      if (config.appOnlyLogin && request.headers["x-sangsangtalk-client"] !== "desktop") {
+        sendJson(response, 403, { error: APP_ONLY_LOGIN_MESSAGE });
+        return;
+      }
       await handleLogin(request, response);
       return;
     }
@@ -1485,6 +1491,7 @@ async function onRequest(request, response) {
 // Saved sessions are back before the first request is accepted.
 const restored = await restoreSessions();
 console.log(`[sangsang] Zulip ${zulipUrl.origin} — TLS ${config.tls.mode}; 세션 ${sessionStore.enabled ? `디스크 저장(복원 ${restored}개)` : "메모리"}${config.publicOrigin ? `; 공개 주소 ${config.publicOrigin}` : ""}`);
+if (config.appOnlyLogin) console.log("[sangsang] APP_ONLY_LOGIN=1: 데스크톱 앱(X-SangsangTalk-Client: desktop)에서만 로그인을 받습니다(안내용, 보안 통제 아님).");
 // Expired sessions leave memory and the file even if their owner never comes back.
 setInterval(() => {
   const now = Date.now();

@@ -128,6 +128,8 @@ export function loadConfig(env = process.env) {
     zulipUrl,
     tls: zulipTls(zulipUrl, env.ZULIP_CA_FILE, env.ZULIP_TLS_INSECURE, warnings),
     sessionKey: parseSessionKey(env.SESSION_KEY, warnings),
+    // M14: only exactly "1" turns it on. A guide for staff, not a security control (headers can be forged).
+    appOnlyLogin: env.APP_ONLY_LOGIN === "1",
     warnings,
   };
 }
