@@ -86,7 +86,31 @@ The `web-bridge` capability (the remote URL allowed to call the shell) is genera
 
 Certificates: the WebView2 window and the https status check use the Windows certificate store. Deploy the organization's root CA to staff PCs (for example by Group Policy). The app does not bundle a certificate.
 
-The web server is different: Node uses its own CA list, not the OS store. Give it the internal CA with `ZULIP_CA_FILE` (preferred) or `NODE_EXTRA_CA_CERTS`, in `/etc/sangsangtalk/web.env`. Web server variables: `HOST`, `PORT`, `PUBLIC_ORIGIN`, `SESSION_KEY` (32-byte base64), `ZULIP_ORIGIN`, `ZULIP_CA_FILE`, `ZULIP_TLS_INSECURE` (development only), `MAX_UPLOAD_MB`. See `.env.example` and `ops/systemd/sangsangtalk-web.service`.
+The web server is different: Node uses its own CA list, not the OS store. Give it the internal CA with `ZULIP_CA_FILE` (preferred) or `NODE_EXTRA_CA_CERTS`, in `/etc/sangsangtalk/web.env`. Web server variables: `HOST`, `PORT`, `PUBLIC_ORIGIN`, `SESSION_KEY` (32-byte base64), `ZULIP_ORIGIN`, `ZULIP_CA_FILE`, `ZULIP_TLS_INSECURE` (development only), `MAX_UPLOAD_MB`, and from stage 2 `AUDIT_KEEP_MONTHS` (default 12), `WATERMARK` (on unless `0`), `AUTO_LOCK_MINUTES` (default 30, `0` = off). See `.env.example`, `ops/systemd/sangsangtalk-web.service` and `ops/README.md` ("2단계 운영 반영").
+
+### Screen-capture blocking (optional, off by default)
+
+`SANGSANGTALK_CAPTURE_BLOCK` is a second build-time variable (`desktop/src-tauri/build.rs`). It is compiled into the executable, so changing it means building and shipping a new installer.
+
+| Value | Result |
+| --- | --- |
+| not set, or `0` | Off (default). The window can be captured as usual. |
+| `1` | On. The main window is built with `content_protected(true)` (`desktop/src-tauri/src/lib.rs`). Tauri's window layer (tao 0.37.2) then calls `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`. |
+| anything else, including an empty value | The build fails with `SANGSANGTALK_CAPTURE_BLOCK=... is invalid; use 1 (on) or 0 (off)`. |
+
+When it is on, the SangsangTalk window is left out of screenshots, screen recordings and screen sharing (remote support and meeting tools included). Staff also cannot capture it for legitimate work, which is why it is off by default; turn it on only when the organization decides to. It does not stop someone photographing the monitor; the web server's watermark (`WATERMARK`) covers that case. Microsoft documents `WDA_EXCLUDEFROMCAPTURE` for Windows 10 version 2004 and later; on older versions the window shows as black instead (not tested here).
+
+PowerShell, from `desktop`, production address with capture blocking:
+
+```
+$env:SANGSANGTALK_APP_URL='https://talk.eumseong.local/'
+$env:SANGSANGTALK_CAPTURE_BLOCK='1'
+npm ci
+npm run build -- --bundles nsis --no-sign
+Remove-Item Env:SANGSANGTALK_APP_URL, Env:SANGSANGTALK_CAPTURE_BLOCK
+```
+
+Cargo rebuilds the app when the value changes (`rerun-if-env-changed`). The GitHub Actions workflow does not set it, so CI installers have capture blocking off. To check an installer, install it and take a screenshot (Win+Shift+S) of the open window: with blocking on, the window is missing or black in the capture. Name or label capture-blocking installers so they are not mixed up with the default build.
 
 ## Closed-network server files
 
@@ -128,7 +152,7 @@ The Windows desktop installer is built separately (above) and carried with the b
 
 `ops/backup.ps1` (Windows PowerShell 5.1) runs Zulip's own `manage.py backup` inside the running `zulip` container, copies the tarball to `C:\SangsangTalk-backup\<yyyyMMdd-HHmmss>\`, removes the temporary file in the container, deletes backup folders older than 30 days (`-RetentionDays`, `-BackupRoot`), and appends to `backup.log` in the backup root. It exits non-zero on failure. The tarball contains `/etc/zulip`, including `zulip-secrets.conf`, so keep the backup folder private. Restore steps and the Task Scheduler command are in `ops/restore.md`; nothing is scheduled automatically.
 
-`ops/backup.sh` is the Linux (bash) version for the closed-network servers, with the same steps, logs and exit codes (`--compose-file`, `--env-file`, `--backup-root`, `--retention-days`, `--notes-only` for the web server, `--dry-run`). Linux restore steps and cron examples are in `ops/restore.md`.
+`ops/backup.sh` is the Linux (bash) version for the closed-network servers, with the same steps, logs and exit codes (`--compose-file`, `--env-file`, `--backup-root`, `--retention-days`, `--notes-only` for the web server, `--dry-run`). It also copies the stage-2 web data (`web/data/notices.json`, `prefs.json`, `admin-meta.json`, `audit/`) into `web-data/` in the same backup folder (`--web-data-dir`); `sessions.json` is left out. `backup.ps1` copies only `notes.json`. Linux restore steps and cron examples are in `ops/restore.md`.
 
 ## Notes
 

@@ -19,6 +19,10 @@ use url::Url;
 /// App address, fixed at build time from SANGSANGTALK_APP_URL (validated by build.rs;
 /// default http://127.0.0.1:43123/). Always an origin followed by `/`.
 const APP_URL: &str = env!("SANGSANGTALK_APP_URL");
+/// Build-time SANGSANGTALK_CAPTURE_BLOCK=1: exclude the main window from screen capture
+/// (Windows `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`, applied by Tauri's
+/// `content_protected`). Off by default because it also blocks legitimate work captures.
+const CAPTURE_BLOCK: bool = matches!(env!("SANGSANGTALK_CAPTURE_BLOCK").as_bytes(), b"1");
 const OFFLINE_URL: &str = "http://sangsang.localhost/offline";
 
 // Windows sign-in at startup is off unless the tray item "시작 시 실행" is checked.
@@ -122,6 +126,7 @@ pub fn run() {
                     .on_navigation(|url| navigation_allowed(url))
                     .on_new_window(|_url, _features| NewWindowResponse::Deny)
                     .on_download(handle_download)
+                    .content_protected(CAPTURE_BLOCK)
                     .build()?;
             let _ = window.set_icon(png_icon(include_bytes!("../icons/128x128.png")));
 

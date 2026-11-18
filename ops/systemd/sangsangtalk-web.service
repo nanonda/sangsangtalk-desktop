@@ -24,6 +24,16 @@
 #   ZULIP_CA_FILE=/etc/sangsangtalk/ca/eumseong-root-ca.pem
 #   MAX_UPLOAD_MB=100
 #   # ZULIP_TLS_INSECURE=1 은 개발용. 운영에서는 쓰지 않는다.
+#   # --- 2단계(docs/p2-contract.md). 줄을 빼면 기본값. 범위를 벗어난 값은 설정 오류로 서버가 시작하지 않는다 ---
+#   # 감사 로그 보존 개월 수(1~120, 기본 12). web/data/audit/YYYY-MM.jsonl 중 지난 것은 서버가 시작할 때 지운다.
+#   AUDIT_KEEP_MONTHS=12
+#   # 대화창 워터마크(이름·로그인ID 앞부분·날짜). 정확히 0이면 끔, 그 밖의 값·없음은 켬(기본 켬).
+#   WATERMARK=1
+#   # 입력이 없는 채로 이 분(0~1440)이 지나면 잠금 화면. 0이면 끔(기본 30).
+#   AUTO_LOCK_MINUTES=30
+#   # CMS에서 직원을 만들 때 로그인 ID(사번@도메인)에 붙일 내부 도메인. 비우면 관리자 본인 이메일의 도메인.
+#   # 점이 있는 도메인 이름만(예: eumseong.local). "@"를 붙이거나 잘못된 값이면 서버가 시작하지 않는다.
+#   LOGIN_DOMAIN=
 #
 # 주의:
 #   - Node는 OS 인증서 저장소가 아니라 자체 CA 목록을 쓴다. 기관 내부 CA로 발급한 Zulip 인증서를 검증하려면
@@ -66,7 +76,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-# 쓰기는 쪽지 인덱스·세션 파일 폴더만
+# 쓰기는 web/data 만(쪽지 인덱스·세션 파일, 2단계의 notices·prefs·admin-meta·audit/)
 ReadWritePaths=/opt/sangsangtalk/web/data
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

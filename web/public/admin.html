@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>상상톡 관리</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body class="admin-page">
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="a-people" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></symbol>
+      <symbol id="a-dept" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></symbol>
+      <symbol id="a-log" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10.5A.5.5 0 0 1 6.5 20V4a.5.5 0 0 1 .5-.5Z"/><path d="M14 3.5V8h4M9.5 12h5M9.5 15.5h5"/></symbol>
+      <symbol id="a-back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+      <symbol id="a-add" viewBox="0 0 24 24"><circle cx="10" cy="8.5" r="3.2"/><path d="M3.8 19.5c.8-3.4 3.3-5.1 6.2-5.1 1.4 0 2.6.3 3.7 1M18 13v6M15 16h6"/></symbol>
+      <symbol id="a-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></symbol>
+      <symbol id="a-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+      <symbol id="a-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></symbol>
+      <symbol id="a-warn" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4M12 17h.01"/></symbol>
+      <symbol id="a-sync" viewBox="0 0 24 24"><path d="M19 8.5A7.5 7.5 0 0 0 5.6 7M5 15.5A7.5 7.5 0 0 0 18.4 17"/><path d="M5 3.5V7h3.5M19 20.5V17h-3.5"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="adm-gate" id="gate">
+    <p id="gate-text">불러오는 중…</p>
+    <a href="/" id="gate-link" hidden>상상톡으로 가기</a>
+  </div>
+
+  <div class="adm" id="adm" hidden>
+    <header class="top">
+      <img src="/assets/emblem.png" alt="음성군">
+      <b>상상톡 관리</b><span class="role" id="me-role"></span>
+      <span class="sp"></span>
+      <span class="who" id="me-who"></span>
+      <a href="/"><svg class="i" aria-hidden="true"><use href="#a-back"/></svg>메신저로 돌아가기</a>
+    </header>
+
+    <nav class="side" aria-label="관리 메뉴">
+      <a class="nav" href="#users" id="nav-users"><svg class="i" aria-hidden="true"><use href="#a-people"/></svg>직원 관리<span class="n" id="nav-users-n"></span></a>
+      <a class="nav" href="#dept" id="nav-dept"><svg class="i" aria-hidden="true"><use href="#a-dept"/></svg>부서 대화방<span class="n" id="nav-dept-n"></span></a>
+      <a class="nav" href="#audit" id="nav-audit"><svg class="i" aria-hidden="true"><use href="#a-log"/></svg>감사 로그</a>
+      <div class="note">관리 화면의 모든 변경은 감사 로그에 남습니다.<br>메시지 내용과 비밀번호는 남기지 않습니다.</div>
+    </nav>
+
+    <main class="main" id="main">
+      <p class="toast" id="toast" role="status"></p>
+
+      <!-- C1 직원 관리 -->
+      <section class="view" id="view-users" aria-labelledby="users-title" hidden>
+        <div class="ph">
+          <div><h1 id="users-title">직원 관리</h1><p>계정 만들기, 정보 고치기, 퇴직·복귀 처리를 합니다. 정규직은 조직도 연계 뒤 자동으로 들어옵니다.</p></div>
+          <div class="acts"><button type="button" class="btn primary" id="user-add"><svg class="i" aria-hidden="true"><use href="#a-add"/></svg>직원 추가</button></div>
+        </div>
+        <div class="panel">
+          <div class="filters">
+            <label class="search"><svg class="i" aria-hidden="true"><use href="#a-search"/></svg><span class="sr-only">이름, 로그인 ID 검색</span><input type="search" id="user-q" placeholder="이름, 로그인 ID 검색" autocomplete="off"></label>
+            <select id="user-dept" aria-label="부서"></select>
+            <select id="user-state" aria-label="상태">
+              <option value="active">재직 중</option>
+              <option value="inactive">퇴직</option>
+              <option value="all">전체</option>
+            </select>
+            <span class="cnt" id="user-count"></span>
+          </div>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th scope="col">이름</th><th scope="col">로그인 ID</th><th scope="col">부서</th><th scope="col">직위</th><th scope="col">권한</th><th scope="col">상태</th><th scope="col" class="r">관리</th></tr></thead>
+              <tbody id="user-rows"></tbody>
+            </table>
+          </div>
+          <div class="pager" id="user-pager"></div>
+        </div>
+      </section>
+
+      <!-- C1 부서 대화방 -->
+      <section class="view" id="view-dept" aria-labelledby="dept-title" hidden>
+        <div class="ph"><div><h1 id="dept-title">부서 대화방</h1><p>직원 정보의 "부서"를 기준으로 부서별 대화방을 만들고 인원을 맞춥니다. 조직도가 연계되면 조직도를 기준으로 합니다.</p></div></div>
+        <div class="sync">
+          <div class="panel">
+            <div class="tablewrap">
+              <table>
+                <thead><tr><th scope="col">부서</th><th scope="col">대화방</th><th scope="col">인원</th><th scope="col">동기화하면</th></tr></thead>
+                <tbody id="dept-rows"></tbody>
+              </table>
+            </div>
+            <p class="foot-note" id="dept-note" hidden></p>
+          </div>
+          <div class="panel sumcard">
+            <h3>부서방 동기화</h3>
+            <p><span id="sync-last">마지막 동기화: 기록 없음</span><br>부서방은 직원이 나가거나 이름을 바꿀 수 없습니다. 대화 기록은 지워지지 않습니다.</p>
+            <button type="button" class="btn primary" id="sync-run"><svg class="i" aria-hidden="true"><use href="#a-sync"/></svg><span>지금 동기화</span></button>
+            <p class="alert" id="sync-error" role="alert"></p>
+            <div class="result" id="sync-result" role="status" hidden>
+              <b id="sync-result-title"></b>
+              <dl><dt>새로 만든 대화방</dt><dd id="sync-created"></dd><dt>추가한 인원</dt><dd id="sync-added"></dd><dt>뺀 인원</dt><dd id="sync-removed"></dd></dl>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- C2 감사 로그 -->
+      <section class="view" id="view-audit" aria-labelledby="audit-title" hidden>
+        <div class="ph"><div><h1 id="audit-title">감사 로그</h1><p>로그인, 파일 주고받기, 메시지 회수, 관리 작업 기록입니다. <span class="keep">보존 기간 12개월</span></p></div></div>
+        <div class="panel">
+          <div class="filters">
+            <input type="date" id="audit-from" aria-label="시작일">~<input type="date" id="audit-to" aria-label="종료일">
+            <select id="audit-user" aria-label="직원"></select>
+            <select id="audit-action" aria-label="동작">
+              <option value="">모든 동작</option>
+              <option value="login">로그인</option>
+              <option value="login_fail">로그인 실패</option>
+              <option value="logout">로그아웃</option>
+              <option value="file_download">파일 내려받기</option>
+              <option value="file_upload">파일 올리기</option>
+              <option value="recall">메시지 회수</option>
+              <option value="admin">관리 작업</option>
+            </select>
+            <span class="cnt" id="audit-count"></span>
+          </div>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th scope="col">시각</th><th scope="col">직원</th><th scope="col">IP</th><th scope="col">동작</th><th scope="col">대상</th><th scope="col">결과</th></tr></thead>
+              <tbody id="audit-rows"></tbody>
+            </table>
+          </div>
+          <div class="pager" id="audit-pager"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 직원 추가·수정 -->
+  <dialog class="drawer" id="user-dialog" aria-labelledby="user-dialog-title">
+    <form id="user-form" novalidate>
+      <header><h2 id="user-dialog-title"></h2><button type="button" class="icon-btn" id="user-close" aria-label="닫기"><svg class="i" aria-hidden="true"><use href="#a-x"/></svg></button></header>
+      <div class="bd">
+        <div class="info" id="user-info"><svg class="i" aria-hidden="true"><use href="#a-info"/></svg><span>기간제·파견 등 조직도에 없는 직원을 직접 만듭니다. 정규직은 조직도 연계로 자동 등록됩니다.</span></div>
+        <div class="field"><label for="f-name">이름</label><input id="f-name" maxlength="60" autocomplete="off"></div>
+        <div class="field" id="f-id-field"><label for="f-id">로그인 ID (사번)</label><div class="idrow"><input id="f-id" maxlength="40" autocomplete="off" aria-describedby="f-id-help"><span id="f-domain"></span></div><div class="help" id="f-id-help">직원은 사번만 입력해 로그인합니다. 도메인은 이관 때 정해집니다.</div></div>
+        <div class="two">
+          <div class="field"><label for="f-dept">부서</label><input id="f-dept" list="dept-options" maxlength="60" autocomplete="off"><datalist id="dept-options"></datalist></div>
+          <div class="field"><label for="f-pos">직위</label><input id="f-pos" maxlength="60" autocomplete="off"></div>
+        </div>
+        <div class="field" id="f-role-field"><label for="f-role">권한</label>
+          <select id="f-role"><option value="member">일반</option><option value="moderator">중재자</option><option value="admin">관리자</option><option value="owner">소유자</option><option value="guest">손님</option></select>
+          <div class="help" id="f-role-help"></div>
+        </div>
+        <div class="field" id="f-must-field"><label class="chk"><input type="checkbox" class="cb" id="f-must" aria-describedby="f-must-help">다음 로그인 때 비밀번호 바꾸기</label><div class="help" id="f-must-help">켜면 이 직원은 다음에 로그인할 때 새 비밀번호를 정해야 메신저를 쓸 수 있습니다.</div></div>
+        <div class="field" id="f-pw-field"><label for="f-pw">첫 비밀번호</label><input id="f-pw" type="password" autocomplete="new-password" aria-describedby="f-pw-help"><div class="help" id="f-pw-help">8자 이상. 직원에게 따로 전달하세요. 첫 로그인 때 새 비밀번호로 바꾸게 됩니다.</div></div>
+        <div class="sect" id="f-note">저장하면 부서 대화방에도 자동으로 들어갑니다(다음 동기화 때).</div>
+        <p class="alert" id="user-error" role="alert"></p>
+      </div>
+      <footer><button type="button" class="btn ghost" id="user-cancel">취소</button><button type="submit" class="btn primary" id="user-submit"></button></footer>
+    </form>
+  </dialog>
+
+  <!-- 비밀번호(방식 결정 전) -->
+  <dialog class="drawer" id="pw-dialog" aria-labelledby="pw-title">
+    <form method="dialog">
+      <header><h2 id="pw-title"></h2><button type="submit" class="icon-btn" aria-label="닫기"><svg class="i" aria-hidden="true"><use href="#a-x"/></svg></button></header>
+      <div class="bd">
+        <div class="info warn"><svg class="i" aria-hidden="true"><use href="#a-warn"/></svg><span>관리 화면에서는 아직 다른 직원의 비밀번호를 바꿀 수 없습니다.<br><b>서버 관리자에게 요청</b>해 주세요. 요청할 때 아래 정보를 알려 주면 됩니다.</span></div>
+        <div class="field"><label for="pw-text">요청할 내용</label><input id="pw-text" readonly></div>
+        <p class="ok-note" id="pw-copied" role="status"></p>
+      </div>
+      <footer><button type="submit" class="btn ghost">닫기</button><button type="button" class="btn primary" id="pw-copy">내용 복사</button></footer>
+    </form>
+  </dialog>
+
+  <!-- 퇴직·복귀 확인 -->
+  <dialog class="v2 confirm" id="state-dialog" role="alertdialog" aria-labelledby="state-title" aria-describedby="state-text">
+    <form id="state-form">
+      <header><img src="/assets/turtle-side.png" alt=""><h2 id="state-title"></h2></header>
+      <div class="bd" id="state-text"></div>
+      <p class="alert" id="state-error" role="alert"></p>
+      <footer><button type="button" class="btn ghost" id="state-cancel">취소</button><button type="submit" class="btn danger" id="state-ok"></button></footer>
+    </form>
+  </dialog>
+
+  <script src="/admin.js" type="module"></script>
+</body>
+</html>

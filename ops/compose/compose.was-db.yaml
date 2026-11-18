@@ -165,6 +165,10 @@ services:
       CONFIG_application_server__queue_workers_multiprocess: "false"
       # 이미지 자체 자동 백업을 끄고 ops/backup.sh로 일원화한다.
       AUTO_BACKUP_ENABLED: "False"
+      # 2단계 A2 한국어 검색: 기본 전문 검색은 단어 단위라 "회의자료"로 "회의자료를"을 못 찾는다.
+      # PGroonga는 단어 안쪽 일부도 찾는다. 확장은 database(zulip/zulip-postgresql:14) 이미지가 DB를 처음 만들 때 설치한다.
+      # 처음 켜고 시작할 때 pgroonga 마이그레이션이 기존 메시지 전체의 검색 열을 채운다(ops/README.md "2단계").
+      SETTING_USING_PGROONGA: "True"
 
       # --- M6: 폐쇄망 외부 접속 끄기 (근거·출처: ops/README.md) ---
       SETTING_ZULIP_SERVICES_URL: "None"

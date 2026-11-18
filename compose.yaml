@@ -100,6 +100,10 @@ services:
       SETTING_REDIS_HOST: "redis"
       SETTING_EXTERNAL_HOST: "${ZULIP_EXTERNAL_HOST:-localhost.localdomain:9991}"
       SETTING_ZULIP_ADMINISTRATOR: "admin@localhost.localdomain"
+      # P2 A2: Korean search. The default full-text search only matches whole words, so "회의자료"
+      # misses "회의자료를". PGroonga matches parts of words. The zulip/zulip-postgresql image already
+      # has the extension. On the first start the pgroonga migrations fill the search column for old messages.
+      SETTING_USING_PGROONGA: "True"
       CERTIFICATES: "self-signed"
       CONFIG_application_server__queue_workers_multiprocess: "false"
     volumes:

@@ -112,6 +112,27 @@ function parseSessionKey(value, warnings) {
   return key;
 }
 
+// Whole number in [min, max]; empty -> fallback.
+function parseWhole(name, value, fallback, min, max) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const number = Number(String(value).trim());
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new ConfigError(`${name}는 ${min}~${max} 사이의 정수여야 합니다: ${value}`);
+  }
+  return number;
+}
+
+// "korea.local": a host name with at least one dot, letters / digits / hyphens only. Lowercased.
+function parseLoginDomain(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return null;
+  const label = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+  if (text.length > 190 || !new RegExp(`^${label}(?:\\.${label})+$`).test(text)) {
+    throw new ConfigError(`LOGIN_DOMAIN은 korea.local 같은 도메인 이름이어야 합니다(@ 없이): ${value}`);
+  }
+  return text;
+}
+
 export function loadConfig(env = process.env) {
   const warnings = [];
   const zulipUrl = parseZulipOrigin(env.ZULIP_ORIGIN);
@@ -130,6 +151,14 @@ export function loadConfig(env = process.env) {
     sessionKey: parseSessionKey(env.SESSION_KEY, warnings),
     // M14: only exactly "1" turns it on. A guide for staff, not a security control (headers can be forged).
     appOnlyLogin: env.APP_ONLY_LOGIN === "1",
+    // P2 C2: months of audit files kept (older ones are deleted at startup).
+    auditKeepMonths: parseWhole("AUDIT_KEEP_MONTHS", env.AUDIT_KEEP_MONTHS, 12, 1, 120),
+    // P2 C3: watermark on unless exactly "0".
+    watermark: env.WATERMARK !== "0",
+    // P2 C4: lock screen after this many idle minutes; 0 turns it off.
+    autoLockMinutes: parseWhole("AUTO_LOCK_MINUTES", env.AUTO_LOCK_MINUTES, 30, 0, 1440),
+    // P2 C1: internal domain of login IDs (<employee no.>@<domain>); empty -> null.
+    loginDomain: parseLoginDomain(env.LOGIN_DOMAIN),
     warnings,
   };
 }

@@ -4,6 +4,8 @@
 # 1. 컨테이너 안에서 manage.py backup 으로 tar.gz를 만든다(DB + 업로드 + /etc/zulip 설정).
 # 2. docker compose cp 로 꺼내 <BACKUP_ROOT>/<yyyyMMdd-HHmmss>/ 에 저장한다.
 # 3. tar 목록으로 압축·DB 덤프 포함 여부를 검사하고, 쪽지 인덱스(web/data/notes.json) 사본을 둔다.
+#    2단계 상상톡 데이터(web/data 의 notices.json, prefs.json, admin-meta.json, audit/)는 같은 폴더의 web-data/ 에 둔다.
+#    web/data/sessions.json(암호화된 로그인 세션, Zulip API 키 포함)은 백업하지 않는다(복원하면 다시 로그인하면 된다).
 # 4. 컨테이너 안 임시 파일을 지운다.
 # 5. RETENTION_DAYS 일보다 오래된 백업 폴더(이름이 yyyyMMdd-HHmmss 형식인 것만)를 지운다.
 # 로그는 <BACKUP_ROOT>/backup.log 에 덧붙인다. 실패하면 종료 코드 1.
@@ -19,7 +21,8 @@
 #     --env-file FILE        docker compose --env-file 로 넘길 파일(선택. 내용은 읽지 않는다)
 #     --service NAME         Zulip 서비스 이름 (기본 zulip)
 #     --notes-file FILE      쪽지 인덱스 경로 (기본 <저장소>/web/data/notes.json)
-#     --notes-only           Zulip 백업 없이 쪽지 인덱스 사본만 만든다(① 웹 서버용)
+#     --web-data-dir DIR     2단계 상상톡 데이터 폴더 (기본 --notes-file 이 있는 폴더 = <저장소>/web/data)
+#     --notes-only           Zulip 백업 없이 쪽지 인덱스와 상상톡 데이터(web-data/) 사본만 만든다(① 웹 서버용)
 #     --dry-run              사전 점검만 하고 할 일을 출력한다(백업·삭제하지 않음, 로그 파일도 쓰지 않음)
 #     -h, --help
 # 예:
@@ -41,6 +44,7 @@ COMPOSE_FILE="$repo_dir/compose.yaml"
 ENV_FILE=""
 SERVICE="zulip"
 NOTES_FILE="$repo_dir/web/data/notes.json"
+WEB_DATA_DIR=""
 NOTES_ONLY=0
 DRY_RUN=0
 
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --env-file) need_arg "$@"; ENV_FILE="$2"; shift 2 ;;
         --service) need_arg "$@"; SERVICE="$2"; shift 2 ;;
         --notes-file) need_arg "$@"; NOTES_FILE="$2"; shift 2 ;;
+        --web-data-dir) need_arg "$@"; WEB_DATA_DIR="$2"; shift 2 ;;
         --notes-only) NOTES_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -65,6 +70,7 @@ if ! [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || (( RETENTION_DAYS < 1 || RETENTION_D
     echo "--retention-days 는 1~3650 사이 정수여야 합니다: $RETENTION_DAYS" >&2
     exit 2
 fi
+[[ -n "$WEB_DATA_DIR" ]] || WEB_DATA_DIR="$(dirname "$NOTES_FILE")"
 
 started_at=$(date +%s)
 stamp=$(date -d "@$started_at" +%Y%m%d-%H%M%S)
@@ -131,11 +137,47 @@ copy_notes() {
     fi
 }
 
+# 2단계 상상톡 데이터 사본(<회차>/web-data/). 아직 만들어지지 않은 파일은 INFO만 남기고 건너뛴다
+# (prefs.json 등은 처음 쓸 때 생긴다). 있는데 복사하지 못하면 WARN을 남기고 1.
+# sessions.json 은 일부러 뺀다(암호화된 로그인 세션·API 키. 복원 뒤에는 다시 로그인하면 된다).
+WEB_DATA_FILES=(notices.json prefs.json admin-meta.json)
+web_data_missing=0
+copy_web_data() {
+    local dest="$target_dir/web-data" name copied=0 failed=0
+    if [[ ! -d "$WEB_DATA_DIR" ]]; then
+        log "상상톡 데이터 폴더가 없어 건너뜁니다: $WEB_DATA_DIR"
+        return 0
+    fi
+    for name in "${WEB_DATA_FILES[@]}" audit; do
+        local src="$WEB_DATA_DIR/$name"
+        if [[ ! -e "$src" ]]; then
+            log "상상톡 데이터 없음(아직 만들어지지 않음), 건너뜀: $src"
+            continue
+        fi
+        if (( DRY_RUN )); then
+            log "[드라이런] 상상톡 데이터 복사: $src -> $dest/$name"
+        elif mkdir -p "$dest" && cp -R -p -- "$src" "$dest/$name"; then
+            copied=$(( copied + 1 ))
+        else
+            log "상상톡 데이터를 복사하지 못했습니다: $src" WARN
+            failed=1
+        fi
+    done
+    if (( ! DRY_RUN && copied )); then
+        log "상상톡 데이터 사본 저장: $dest ($(du -sb "$dest" | cut -f1) 바이트, ${copied}개 항목)"
+    fi
+    return "$failed"
+}
+
 # 마지막 줄. 쪽지 사본이 빠졌으면 WARN 수준으로 그 사실을 함께 남긴다.
 finish_log() {
     local elapsed=$(( $(date +%s) - started_at )) prefix="${1:-}"
-    if (( notes_missing )); then
+    if (( notes_missing && web_data_missing )); then
+        log "${prefix}백업 완료 (${elapsed}초) — 경고: 쪽지 인덱스 사본 없음, 상상톡 데이터 일부 복사 실패(위 WARN 참고)" WARN
+    elif (( notes_missing )); then
         log "${prefix}백업 완료 (${elapsed}초) — 경고: 쪽지 인덱스 사본 없음(위 WARN 참고)" WARN
+    elif (( web_data_missing )); then
+        log "${prefix}백업 완료 (${elapsed}초) — 경고: 상상톡 데이터 일부 복사 실패(위 WARN 참고)" WARN
     else
         log "${prefix}백업 완료 (${elapsed}초)"
     fi
@@ -169,6 +211,7 @@ main() {
 
     if (( NOTES_ONLY )); then
         copy_notes || { fail "--notes-only 인데 쪽지 인덱스를 복사하지 못했습니다: $NOTES_FILE"; return; }
+        copy_web_data || { fail "--notes-only 인데 상상톡 데이터를 복사하지 못했습니다: $WEB_DATA_DIR"; return; }
         prune_old
         finish_log "$( (( DRY_RUN )) && echo '[드라이런] ')"
         return
@@ -191,6 +234,7 @@ main() {
         log "[드라이런] 실행할 명령: ${compose_cmd[*]} exec -T -u zulip $SERVICE /home/zulip/deployments/current/manage.py backup --output=$container_file"
         log "[드라이런] 복사: ${compose_cmd[*]} cp $SERVICE:$container_file $target_file"
         copy_notes || notes_missing=1
+        copy_web_data || web_data_missing=1
         prune_old
         finish_log "[드라이런] 점검 완료, "
         return
@@ -221,6 +265,8 @@ main() {
 
     # 4-1) 상상톡 쪽지 인덱스 사본. 없거나 실패하면 경고만 남기고 계속한다(마지막 줄에 표시).
     copy_notes || notes_missing=1
+    # 4-2) 2단계 상상톡 데이터(공지·사용자 설정·관리 메타·감사 로그). 실패하면 경고만 남기고 계속한다.
+    copy_web_data || web_data_missing=1
 
     # 5) 오래된 백업 정리
     prune_old

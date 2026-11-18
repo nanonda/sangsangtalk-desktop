@@ -23,7 +23,7 @@
 | `rocky9.md` | ①·② | Rocky 9 설치: 오프라인 RPM 저장소, Docker CE, SELinux, Node.js 24, nginx, chrony |
 | `firewall.md` | 전체 | 2대 허용 포트 표, firewalld·DOCKER-USER 예시, 3계층 표(부록) |
 | `pki/make-internal-ca.sh`, `pki/README.md` | 관리용 | 내부 CA·서버 인증서(웹·Zulip·DB) 발급, 배치 위치, 직원 PC 루트 배포, 갱신 |
-| `backup.sh` / `backup.ps1` | ②·① / 개발 PC | Zulip 공식 백업 + 쪽지 인덱스 사본 |
+| `backup.sh` / `backup.ps1` | ②·① / 개발 PC | Zulip 공식 백업 + 쪽지 인덱스 사본(`backup.sh`는 2단계 `web/data` 파일도) |
 | `restore.md` | | 백업·복원 절차(Windows, 리눅스) |
 | `make-offline-bundle.sh` | 반입 준비 PC | 소스 + 이미지 5개 `docker save` + (`--with-rocky9`) RPM·Node.js + SHA256SUMS |
 | `compose/compose.app.yaml`, `compose/compose.db.yaml` | 3계층 | 보안성 검토에서 DB 서버 분리를 요구할 때. DB 44703·TLS(`verify-full`)를 똑같이 맞춰 둠 |
@@ -43,9 +43,11 @@
 4. ②: `rocky9.md` 2절(Docker CE) → `/etc/sangsangtalk/zulip.env`(0600 root)에 아래 값 → 인증서 배치(`pki/README.md`) →
    `docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.was-db.yaml up -d` → `firewall.md`의 DOCKER-USER.
    이미지 자체 자동 백업은 꺼져 있고(`AUTO_BACKUP_ENABLED: "False"`) `ops/backup.sh`를 cron으로 돌린다(`restore.md`).
-   처음 기동 후 조직 만들기·관리자 계정·조직 설정은 아래 "M12" 절.
+   처음 기동 후 조직 만들기·관리자 계정·조직 설정은 아래 "M12" 절, 이어서 "2단계 운영 반영" 절(읽음 확인·수정 제한 조직 설정, CMS 관리 계정의 `can_create_users`).
+   한국어 검색(PGroonga)이 켜져 있어 **처음 기동할 때 검색 색인 마이그레이션이 돈다**(기존 데이터가 있으면 오래 걸린다. "2단계 운영 반영" 1절).
 5. ①: `rocky9.md` 3절(Node.js 24 → `/opt/node`, nginx) → `systemd/sangsangtalk-web.service`(설치 명령은 파일 머리 주석),
-   `/etc/sangsangtalk/web.env`(`ZULIP_ORIGIN=https://zulip.eumseong.local`, `ZULIP_CA_FILE=/etc/sangsangtalk/ca/eumseong-root-ca.pem`, `PUBLIC_ORIGIN=https://talk.eumseong.local`) → nginx.
+   `/etc/sangsangtalk/web.env`(`ZULIP_ORIGIN=https://zulip.eumseong.local`, `ZULIP_CA_FILE=/etc/sangsangtalk/ca/eumseong-root-ca.pem`, `PUBLIC_ORIGIN=https://talk.eumseong.local`,
+   2단계 `AUDIT_KEEP_MONTHS`·`WATERMARK`·`AUTO_LOCK_MINUTES`·`LOGIN_DOMAIN`은 비우면 기본값 — "2단계 운영 반영" 4절) → nginx(감사 로그 IP용 `X-Forwarded-For` 포함).
 6. 직원 PC: (내부 CA면) 루트 인증서를 Windows 인증서 저장소에 배포(`pki/README.md`)하고, `SANGSANGTALK_APP_URL=https://talk.eumseong.local/`로 빌드한 설치파일을 배포(`BUILD.md`).
 
 ② `/etc/sangsangtalk/zulip.env` 값(`compose.was-db.yaml`):
@@ -178,8 +180,152 @@ umask 077; read -rs -p '초기 비밀번호: ' pw; echo; printf '%s' "$pw" > /ro
 - `change_password`는 비밀번호만 바꾼다(12.3 코드: `set_password` 후 저장). **API 키는 그대로**다.
   Zulip 웹 세션은 Django 기본 동작(세션 해시)으로 끊기는 것으로 보이나 확인 필요.
   상상톡 웹 서버는 로그인 때 받은 API 키로 일하므로, 계정 탈취가 의심되면 비밀번호 변경과 함께 API 키도 바꿔야 한다.
-  API 키 재발급 관리 명령은 12.3에 없다(`do_regenerate_api_key`는 코드에만 있음) — 확인 필요: 관리 화면에서 사용자 비활성화(`deactivate_user`) 후 재활성화로 대신할지, 백엔드 담당과 상의.
-- 직원에게 초기 비밀번호를 전달하는 방법(대면·내부 메신저 등)은 기관 절차를 따른다. 첫 로그인 뒤 직원이 바꾸게 하는 기능은 상상톡에 없다 — CMS 단계에서 다룬다.
+  API 키 재발급 관리 명령은 12.3에 없다. `manage.py shell`로 `do_regenerate_api_key`를 부르는 절차는 아래 "2단계 운영 반영" 3절.
+- 직원에게 초기 비밀번호를 전달하는 방법(대면·내부 메신저 등)은 기관 절차를 따른다. 초기화 뒤에는 CMS에서 "다음 로그인 때 비밀번호 바꾸기"를 켠다(아래 3절).
+  계정 만들기는 2단계부터 CMS(`/admin`)에서도 할 수 있다(관리 계정에 `can_create_users` 필요, 아래 2절). CMS로 만든 계정은 첫 로그인 때 비밀번호를 바꾸게 된다.
+
+## 2단계 운영 반영 (`docs/p2-contract.md`)
+
+아래 명령은 ② 서버 root 셸, 저장소 `/opt/sangsangtalk` 기준이다(3계층이면 compose 파일만 `compose.app.yaml`, DB 명령은 [DB] 서버에서 `compose.db.yaml`).
+
+```bash
+cd /opt/sangsangtalk
+C=(docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.was-db.yaml)
+M=(exec -u zulip zulip /home/zulip/deployments/current/manage.py)
+MT=(exec -T -u zulip zulip /home/zulip/deployments/current/manage.py)   # 표준입력으로 파이썬을 넘길 때(-T: TTY 없음)
+```
+
+### 1. 한국어 검색(PGroonga)
+
+- `compose.was-db.yaml`·`compose.app.yaml`의 zulip 환경에 `SETTING_USING_PGROONGA: "True"`(개발 `compose.yaml`과 같음). 기본 전문 검색은 단어 단위라
+  조사가 붙은 말("회의자료를")이나 단어 안쪽 일부를 찾지 못한다.
+- 확장: `zulip/zulip-postgresql:14` 이미지의 초기화 스크립트(`/docker-entrypoint-initdb.d/zulip-create-pgroonga.sql`)가 **DB를 처음 만들 때** `CREATE EXTENSION pgroonga`를 한다.
+  이 이미지로 만든 볼륨이면 이미 있다. 확인(버전 한 줄이 나오면 됨, 개발 PC는 `4.0.4`):
+  `"${C[@]}" exec -T database psql -U zulip -d zulip -Atc "select extversion from pg_extension where extname='pgroonga'"`
+- **처음 켜고 시작할 때 기존 메시지 색인 마이그레이션이 돈다.** docker-zulip 12.3 entrypoint가 시작할 때마다 `manage.py migrate`를 돌리는데,
+  `USING_PGROONGA`를 켜면 `pgroonga` 앱의 마이그레이션 3개가 처음 적용된다(12.3 `pgroonga/migrations/`에서 확인):
+  0001 `zerver_message.search_pgroonga` 열 추가 → 0002 **모든 기존 메시지**의 검색 열 채우기(UPDATE) → 0003 `CREATE INDEX CONCURRENTLY`로 PGroonga 색인.
+  - 메시지 수에 비례해 오래 걸리고, 끝날 때까지 Zulip이 응답하지 않는다(상상톡 로그인·대화 불가). 업무 시간 밖에, **먼저 백업(`backup.sh`)** 하고 한다.
+  - 진행은 `"${C[@]}" logs -f zulip`(마지막에 `Database migrations completed.`). 도중에 컨테이너를 끄지 않는다.
+    색인 만들기가 중단되면 쓸 수 없는(INVALID) 색인이 남을 수 있다 — 그때 다시 시작하면 0003이 `DROP INDEX IF EXISTS` 후 다시 만드는 것으로 보이나 **확인 필요**.
+  - 빈 DB로 새로 설치하면 처음부터 켜진 채로 만들어지므로 오래 걸리지 않는다.
+  - 소요 시간은 운영 규모로 재 보지 않았다 — 개발 볼륨을 옮기는 경우 시험 서버에서 먼저 재 본다(확인 필요).
+- 백업·복원: `pg_dump`에 검색 열·색인이 같이 들어간다. 복원 대상 DB에도 `pgroonga` 확장이 있어야 한다(같은 이미지면 있음).
+
+### 2. 조직 설정과 CMS 관리 계정 권한
+
+**2-1. 읽음 확인 켜기·수정 제한 600초** (A1 `enable_read_receipts = true`, A4 `message_content_edit_limit_seconds = 600` — 상상톡 서버의 10분 수정·회수 제한과 같은 값)
+
+개발 PC에서는 `node web/dev/apply-p2-settings.mjs`가 한다. 이 스크립트는 **저장소 루트의 개발용 `compose.yaml`** 에 `docker compose exec`로 `manage.py shell`을 부르므로
+운영에서는 그대로 쓰지 않는다: ① 웹 서버에는 Docker와 Zulip 컨테이너가 없어 실행되지 않고, ②에는 Node가 없으며 있더라도 다른 compose 파일을 가리킨다.
+같은 파이썬(스크립트 안 내용과 같음, 다시 돌려도 안전)을 ②에서 직접 넘긴다:
+
+```bash
+"${C[@]}" "${MT[@]}" shell <<'PY'
+import json
+from zerver.models.realms import get_realm
+from zerver.actions.realm_settings import do_set_realm_property
+
+realm = get_realm("")   # 루트 도메인 조직(string_id ""). 다른 조직이면 list_realms 의 string_id
+if not realm.enable_read_receipts:
+    do_set_realm_property(realm, "enable_read_receipts", True, acting_user=None)
+if realm.message_content_edit_limit_seconds != 600:
+    do_set_realm_property(realm, "message_content_edit_limit_seconds", 600, acting_user=None)
+realm.refresh_from_db()
+print("P2_RESULT " + json.dumps({
+    "enable_read_receipts": realm.enable_read_receipts,
+    "message_content_edit_limit_seconds": realm.message_content_edit_limit_seconds,
+}))
+PY
+```
+
+마지막 줄이 `P2_RESULT {"enable_read_receipts": true, "message_content_edit_limit_seconds": 600}`이면 된다.
+(개발 PC에서 같은 방식(`exec -T … shell <<'PY'`)으로 값 읽기만 확인했다. 운영 서버 실행은 아직 안 해 봄.)
+관리자 PC의 Zulip 관리 화면(조직 설정의 읽음 확인, 메시지 수정 시간 제한)으로 바꿔도 같다 — 한국어 메뉴 이름은 확인 필요.
+
+**2-2. CMS 직원 생성 권한(`can_create_users`)**
+
+CMS(`/admin`)의 "직원 추가"는 상상톡 서버가 **로그인한 관리자 본인의 Zulip API 키**로 Zulip `POST /users`를 부른다. 그래서 CMS로 직원을 만들 관리자 계정마다
+Zulip 관리자(또는 소유자) 역할과 별도로 `can_create_users` 권한이 있어야 한다. 없으면 CMS에 "관리 계정에 직원 생성 권한(can_create_users)이 없습니다"가 뜬다.
+
+```bash
+# CMS에 들어가려면 관리자·소유자 역할(이미 관리자면 생략)
+"${C[@]}" "${M[@]}" change_user_role -r '' <관리자 로그인ID> admin
+# 직원 생성 권한 주기 / 회수(--revoke)
+"${C[@]}" "${M[@]}" change_user_role -r '' <관리자 로그인ID> can_create_users
+"${C[@]}" "${M[@]}" change_user_role -r '' --revoke <관리자 로그인ID> can_create_users
+```
+
+(12.3 `change_user_role --help`에서 역할 값 `can_create_users`와 `--revoke`를 확인함.) 로그인 ID는 Zulip 이메일 칸 값(`<사번>@<내부도메인>`)이다.
+
+### 3. 운영 절차(관리자)
+
+**3-1. 비밀번호 초기화.** CMS의 비밀번호 초기화는 아직 없다(누르면 "서버 관리자에게 요청하세요"). ② 서버에서 바꾼 뒤 CMS에서 첫 로그인 변경을 켠다.
+
+1. `"${C[@]}" "${M[@]}" change_password -r '' <로그인ID>` (위 "계정 만들기·비밀번호 초기화" 절과 같음)
+2. 새 비밀번호를 기관 절차로 직원에게 전달한다.
+3. CMS → 그 직원 편집 → **"다음 로그인 때 비밀번호 바꾸기"** 를 켜고 저장. 직원은 다음 로그인 때 새 비밀번호를 정해야 메신저를 쓸 수 있고, 바꾸면 자동으로 풀린다(관리자 본인 계정에는 이 칸이 없다).
+
+**3-2. 로그인 30분 차단 풀기.** Zulip은 같은 로그인 ID로 30분 안에 5번 비밀번호가 틀리면 30분 동안 로그인을 막는다(Zulip 응답 HTTP 429).
+상상톡 잠금 화면에서 5번 틀려 로그아웃된 경우도 같다. 기다리지 않고 풀려면:
+
+```bash
+"${C[@]}" "${M[@]}" reset_authentication_attempt_count -u <로그인ID>
+```
+
+- Zulip은 **로그인 때 입력한 문자열 그대로**를 기준으로 횟수를 센다(12.3 `zproject/backends.py` `RateLimitedAuthenticationByUsername`, 대소문자 구분. 상상톡 서버는 앞뒤 공백만 지운다).
+  직원이 대문자를 섞어 입력했으면 그대로 넣는다. 풀리지 않으면 직원이 실제로 입력한 형태를 확인한다.
+  잠금 화면에서 틀린 경우는 직원이 입력한 문자열이 아니라 Zulip에 저장된 로그인 ID(이메일 형식, 보통 소문자)로 세어진다(추정). 두 형태를 모두 풀어 본다.
+
+**3-3. 계정 도용 대응.** Zulip은 비밀번호를 바꿔도 API 키를 유지하고, 상상톡 세션은 API 키로 일한다. 그래서 세 가지를 함께 한다(공격자가 사이에 다시 로그인하지 못하게 이 순서로):
+
+1. 비밀번호 바꾸기: 3-1의 1번.
+2. Zulip API 키 재발급(아래). 옛 키를 쓰는 모든 연결(상상톡 서버의 그 사람 세션 포함)이 Zulip에서 거부된다.
+3. CMS → 그 직원 → **"세션 끊기"**: 상상톡 세션과 이벤트 큐를 끊는다(감사 로그 `admin_user_logout`). 응답의 `apiKeyRenewed`는 늘 `false`다 — 키 재발급은 2번이 한다.
+4. 필요하면 CMS에서 "다음 로그인 때 비밀번호 바꾸기"를 켠다. 퇴직이면 CMS "퇴직 처리"(세션은 자동으로 끊긴다).
+
+API 키 재발급(관리 명령이 없어 `manage.py shell`로 Zulip 내부 함수 `do_regenerate_api_key`를 부른다):
+
+```bash
+"${C[@]}" "${MT[@]}" shell <<'PY'
+from zerver.models.realms import get_realm
+from zerver.models.users import get_user_by_delivery_email
+from zerver.actions.user_settings import do_regenerate_api_key
+
+realm = get_realm("")
+user = get_user_by_delivery_email("<도용된 로그인ID>", realm)
+admin = get_user_by_delivery_email("<처리하는 관리자 로그인ID>", realm)   # Zulip 감사 기록의 처리자
+do_regenerate_api_key(user, admin)   # 새 키는 출력하지 않는다
+print("API_KEY_RENEWED", user.id)
+PY
+```
+
+- **확인 필요(운영 실행 미검증):** 12.3 컨테이너 코드에서 함수 이름·인자(`do_regenerate_api_key(user_profile, acting_user)`, `@transaction.atomic(durable=True)`)와
+  두 import가 되는 것까지만 확인했다. 실제 키를 바꿔 보지는 않았다(개발 Zulip 계정에도 하지 않음). 시험 계정으로 한 번 해 보고 그 계정의 상상톡 세션이 끊기는지 본다.
+- Zulip 웹·공식 앱으로 로그인한 세션도 끊으려면 Zulip 관리 화면에서 비활성화 후 재활성화하는 방법이 있다(직원은 Zulip 화면을 쓰지 않으므로 보통 필요 없음).
+
+### 4. 웹 서버 환경변수(① `/etc/sangsangtalk/web.env`)
+
+`.env.example`과 `systemd/sangsangtalk-web.service` 머리 주석의 예시에 있다. 비우거나 줄을 빼면 기본값. 범위를 벗어나면 설정 오류로 서버가 시작하지 않는다(journal에 한국어 오류).
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `AUDIT_KEEP_MONTHS` | `12` | 감사 로그(`web/data/audit/YYYY-MM.jsonl`) 보존 개월 수(1~120). 지난 파일은 **서버가 시작할 때** 지운다. 기관 보존 기준에 맞춘다 |
+| `WATERMARK` | 켬 | 대화창 배경 워터마크(이름·로그인ID 앞부분·날짜). 정확히 `0`이면 끔 |
+| `AUTO_LOCK_MINUTES` | `30` | 입력이 없는 채로 이 분(0~1440)이 지나면 잠금 화면. `0`이면 끔 |
+| `LOGIN_DOMAIN` | 없음 | CMS 직원 추가 때 로그인 ID `사번@<도메인>`의 도메인(예: `eumseong.local`). 비우면 관리자 본인 이메일의 도메인. 점이 있는 도메인 이름만 받고, 잘못된 값이면 서버가 시작하지 않는다 |
+
+바꾼 뒤 `systemctl restart sangsangtalk-web`. 데스크톱 캡처 방지(`SANGSANGTALK_CAPTURE_BLOCK`)는 서버 설정이 아니라 설치파일 빌드 옵션이다(`BUILD.md`).
+
+### 5. 감사 로그 IP와 nginx
+
+웹 서버는 `PUBLIC_ORIGIN`이 있고 요청이 127.0.0.1·::1(nginx)에서 오면 `X-Forwarded-For`의 **마지막 값**을 감사 로그 IP로 쓴다.
+`nginx/sangsangtalk.conf`는 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`로 직원 PC 주소(`$remote_addr`)를 맨 뒤에 붙인다.
+직원 PC가 이 헤더를 꾸며 보내도 앞쪽에 남을 뿐이다. nginx 앞에 다른 프록시(L4/L7 부하분산 등)를 두면 마지막 값이 그 프록시 주소가 되므로 그때는 다시 정한다.
+
+### 6. 백업
+
+`backup.sh`가 [웹] 서버의 `web/data` 2단계 파일(`notices.json`, `prefs.json`, `admin-meta.json`, `audit/`)을 회차 폴더의 `web-data/`에 함께 복사한다(`sessions.json`은 뺀다). 표와 복원은 `restore.md`.
 
 ## 앱 계층 메모
 

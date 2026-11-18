@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상상톡 시안 v3 2-C</title>
+<!-- v3 2-C: 잠금 화면(C4), 워터마크(C3), 투표·할 일(C5). 관리자 화면(C1·C2)은 admin.html. -->
+<link rel="stylesheet" href="base-v2.css">
+<link rel="stylesheet" href="base-v3.css">
+<style>
+/* ───────── C3 워터마크 ───────── */
+.log{isolation:isolate}
+.wm{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden;user-select:none}
+.wm span{position:absolute;white-space:nowrap;font-size:13px;font-weight:600;color:rgba(27,36,48,.07);transform:rotate(-24deg);transform-origin:left top;letter-spacing:.02em}
+.log > *:not(.wm){position:relative;z-index:1}
+body.nowm .wm{display:none}
+
+/* ───────── C5 투표·할 일 카드 ───────── */
+.card{width:340px;max-width:100%;border-radius:var(--r-lg);background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-1);overflow:hidden}
+.card .ch{display:flex;align-items:center;gap:8px;padding:12px 14px 4px;font-size:12px;font-weight:700;color:var(--navy-700)}
+.card .ch .ic{width:24px;height:24px;border-radius:7px;background:var(--navy-100);display:grid;place-items:center}
+.card .ch .ic svg.i{width:15px;height:15px;stroke-width:2}
+.card.todo .ch{color:var(--teal-700)} .card.todo .ch .ic{background:var(--teal-50)}
+.card h3{margin:2px 14px 10px;font-size:15px;font-weight:800;line-height:1.4;letter-spacing:-.02em}
+.opts{display:flex;flex-direction:column;gap:6px;padding:0 10px}
+.popt{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center;min-height:40px;padding:6px 10px;border-radius:10px;border:1px solid var(--line);text-align:left;overflow:hidden}
+.popt .fill{position:absolute;inset:0 auto 0 0;background:var(--navy-100);z-index:0}
+.popt > *:not(.fill){position:relative;z-index:1}
+.popt .mk{width:18px;height:18px;border-radius:50%;border:1.8px solid #c3ccd4;background:#fff;display:grid;place-items:center}
+.popt[aria-checked=true]{border-color:var(--navy-700)}
+.popt[aria-checked=true] .fill{background:#d4e2f4}
+.popt[aria-checked=true] .mk{border-color:var(--navy-700);background:var(--navy-700)}
+.popt[aria-checked=true] .mk::after{content:"";width:8px;height:4px;border:2px solid #fff;border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.popt b{font-size:13.5px;font-weight:600}
+.popt small{display:block;font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.popt .n{font-size:13px;font-weight:800;color:var(--navy-700);font-variant-numeric:tabular-nums}
+.popt:hover{border-color:#b9c7d6}
+.card .cf{display:flex;align-items:center;gap:6px;padding:10px 14px 12px;font-size:12px;color:var(--ink-3)}
+.card .cf .txt-btn{margin-left:auto;height:26px;font-size:12px}
+.prog{height:6px;border-radius:3px;background:var(--line-2);margin:0 14px 8px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--teal-600);border-radius:3px}
+.titem{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;padding:8px 14px;cursor:pointer}
+.titem:hover{background:var(--bg)}
+.titem .cb{margin-top:1px}
+.titem b{display:block;font-size:13.5px;font-weight:500;line-height:1.45}
+.titem small{font-size:11.5px;color:var(--teal-700);font-weight:600}
+.titem.done b{color:var(--ink-3);text-decoration:line-through;text-decoration-color:#b8c1ca}
+
+/* 입력창 + 메뉴 */
+.plus-btn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--ink-2)}
+.plus-btn:hover,.plus-btn[aria-expanded=true]{background:var(--bg);color:var(--ink)}
+.plus-menu{left:8px;bottom:calc(100% + 8px);width:240px}
+
+/* 투표 만들기 */
+.optrow{display:flex;gap:6px;align-items:center}
+.optrow input{flex:1;height:40px;padding:0 12px;border-radius:10px;border:1px solid var(--line);outline:0}
+.optrow input:focus{border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100)}
+.optrow .num{width:20px;text-align:center;font-size:12px;font-weight:700;color:var(--ink-3)}
+.optlist{display:flex;flex-direction:column;gap:6px}
+.addopt{align-self:flex-start;height:32px;padding:0 10px 0 6px;border-radius:9px;display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:var(--teal-700)}
+.addopt:hover{background:var(--teal-50)}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+
+/* ───────── C4 잠금 화면 ───────── */
+.lock{position:fixed;inset:0 0 46px 0;z-index:80;display:none;place-items:center;background:
+  radial-gradient(1200px 600px at 20% 0%,rgba(26,163,149,.35),transparent 60%),
+  linear-gradient(160deg,var(--navy-700),var(--navy-900) 70%)}
+.lock .box{width:380px;max-width:calc(100% - 32px);background:var(--panel);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.35);padding:30px 30px 24px;text-align:center;position:relative}
+.lock .emb{width:52px;height:52px;border-radius:50%;margin:0 auto 8px;display:block}
+.lock h2{margin:0;font-size:19px;font-weight:800;letter-spacing:-.02em}
+.lock .why{margin:6px 0 18px;font-size:13px;color:var(--ink-3);line-height:1.55}
+.lock .user{display:flex;align-items:center;gap:12px;text-align:left;padding:12px;border-radius:14px;background:var(--bg);margin-bottom:14px}
+.lock .user img{width:42px;height:42px;border-radius:14px;background:var(--lime-100);object-fit:cover;object-position:50% 12%}
+.lock .user b{display:block;font-size:14.5px}
+.lock .user small{font-size:12px;color:var(--ink-3)}
+.lock .field{text-align:left}
+.lock .field input{height:44px}
+.lock .btn{width:100%;height:44px;margin-top:12px}
+.lock .err{word-break:keep-all;display:none;margin-top:8px;font-size:12.5px;color:var(--danger-600);font-weight:600;text-align:left}
+.lock .alt{margin-top:14px;font-size:12.5px;color:var(--ink-3)}
+.lock .alt button{color:var(--ink-2);font-weight:700;text-decoration:underline;text-underline-offset:2px;font-size:12.5px}
+.lock .mascot{position:absolute;width:86px;right:-26px;top:-46px;mix-blend-mode:normal}
+body.lockerr .lock .err{display:block}
+body.lockerr .lock .field input{border-color:var(--danger-500);box-shadow:0 0 0 3px var(--danger-50)}
+
+body[data-s=plus] .plus-menu{display:block}
+body[data-s=poll] #pollDlg{display:grid}
+body[data-s=todo] #todoDlg{display:grid}
+body[data-s=lock] .lock, body[data-s=lockerr] .lock{display:grid}
+</style>
+</head>
+<body data-s="base">
+<div class="frame">
+  <nav class="rail" aria-label="주 메뉴">
+    <img class="emblem" src="assets/emblem.png" alt="음성군">
+    <button class="rail-btn" aria-current="page"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M8.5 9h7M8.5 12h4.5"/></svg>대화<span class="badge">2</span></button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg>직원</button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/></svg>쪽지</button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><path d="m12 3.8 2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8Z"/></svg>별표</button>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.4A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z"/></svg>설정</button>
+    <div class="me" title="박지민 · 사용 중"><img src="assets/turtle-front.png" alt="내 프로필"><span class="dot" aria-hidden="true"></span></div>
+    <span class="me-label">사용 중</span>
+  </nav>
+
+  <section class="list" aria-label="대화 목록">
+    <header class="list-head">
+      <div class="brand"><b>상상톡</b></div>
+      <button class="new-btn"><span class="plus" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M6 2v8M2 6h8"/></svg></span>새 대화<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
+    </header>
+    <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="대화방, 이름, 메시지 검색"></label>
+    <div class="chips"><button class="chip" aria-pressed="true">전체</button><button class="chip" aria-pressed="false">안읽음<span class="n">2</span></button><button class="chip" aria-pressed="false">그룹</button><button class="chip" aria-pressed="false">1:1</button></div>
+    <div class="rooms">
+      <div class="sec">내 부서</div>
+      <button class="room" aria-current="true">
+        <span class="av dept"><svg class="i" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></svg></span>
+        <span><span class="t"><b>홍보실</b><span class="num">5</span><span class="tag-dept">부서</span></span><p>나: 할 일: 축제 전날 점검</p></span>
+        <span class="meta"><time>오전 11:20</time></span>
+      </button>
+      <div class="sec">그룹 <span class="cnt">1</span></div>
+      <button class="room">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>홍보 협업방</b><span class="num">6</span></span><p>강예린: 사진 3장</p></span>
+        <span class="meta"><time>오전 10:44</time><span class="badge">2</span></span>
+      </button>
+    </div>
+  </section>
+
+  <main class="chat" aria-label="대화">
+    <header class="chat-head">
+      <span class="av dept"><svg class="i" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></svg></span>
+      <div><h1>홍보실 <span class="tag-dept">부서</span></h1><p>김도윤, 이서준, 최유나, 정하람, 나</p></div>
+    </header>
+
+    <div class="log" id="log" role="log" aria-label="메시지">
+      <!-- C3: 워터마크 (스크립트가 채움, 화면 읽기에서 숨김) -->
+      <div class="wm" aria-hidden="true" id="wm"></div>
+
+      <div class="day"><span>2026년 11월 17일 화요일</span></div>
+
+      <div class="msg">
+        <span class="av sm c1">도윤</span>
+        <div class="body">
+          <span class="who">김도윤<small>홍보실장</small></span>
+          <div class="row">
+            <!-- C5: 투표 카드 -->
+            <div class="card poll" role="group" aria-label="투표: 축제 홍보 부스 운영 시간">
+              <div class="ch"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M6 20V11M12 20V5M18 20v-6"/></svg></span>투표 · 한 개 고르기</div>
+              <h3>축제 홍보 부스 운영 시간은 언제가 좋을까요?</h3>
+              <div class="opts" role="radiogroup" aria-label="항목">
+                <button class="popt" role="radio" aria-checked="true"><span class="fill" style="width:60%"></span><span class="mk"></span><span><b>오전 10시 ~ 오후 4시</b><small>김도윤, 정하람, 나</small></span><span class="n">3</span></button>
+                <button class="popt" role="radio" aria-checked="false"><span class="fill" style="width:20%"></span><span class="mk"></span><span><b>오후 1시 ~ 오후 7시</b><small>이서준</small></span><span class="n">1</span></button>
+                <button class="popt" role="radio" aria-checked="false"><span class="fill" style="width:20%"></span><span class="mk"></span><span><b>오전·오후 두 번 나눠서</b><small>최유나</small></span><span class="n">1</span></button>
+              </div>
+              <div class="cf">5명 중 5명 참여 · 누르면 바꿀 수 있어요</div>
+            </div>
+            <span class="stamp"><time>오전 11:02</time></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg mine">
+        <div class="body">
+          <div class="row">
+            <!-- C5: 할 일 카드 -->
+            <div class="card todo" role="group" aria-label="할 일: 축제 전날 점검">
+              <div class="ch"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg></span>할 일</div>
+              <h3>축제 전날 점검</h3>
+              <div class="prog" role="progressbar" aria-valuenow="2" aria-valuemin="0" aria-valuemax="4" aria-label="4개 중 2개 완료"><i style="width:50%"></i></div>
+              <label class="titem done"><input type="checkbox" class="cb" checked><span><b>부스 천막 설치 확인</b><small>정하람 완료</small></span></label>
+              <label class="titem done"><input type="checkbox" class="cb" checked><span><b>현수막 3개 게시</b><small>나 완료</small></span></label>
+              <label class="titem"><input type="checkbox" class="cb"><span><b>안내 책자 500부 수령</b></span></label>
+              <label class="titem"><input type="checkbox" class="cb"><span><b>방송 장비 리허설 (오후 2시, 군민회관)</b></span></label>
+              <div class="cf">4개 중 2개 완료 · 누구나 체크할 수 있어요</div>
+            </div>
+            <span class="stamp"><button class="unread" aria-label="안 읽은 사람 1명">1</button><time>오전 11:20</time></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <form class="composer" onsubmit="return false">
+      <label class="sr-only" for="msg">메시지</label>
+      <textarea id="msg" rows="1" placeholder="홍보실에 메시지 보내기"></textarea>
+      <div class="tools" style="position:relative">
+        <button type="button" class="plus-btn" aria-label="더 보내기" aria-haspopup="menu" data-go="plus" id="plusBtn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/></svg></button>
+        <button type="button" class="attach" aria-label="파일 첨부"><svg class="i" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>파일</button>
+        <button type="button" class="at-btn" aria-label="멘션">@</button>
+        <span class="hint">Enter 전송 · Shift+Enter 줄바꿈</span>
+        <button class="send"><svg class="i" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M20 4 9.5 14.5M20 4l-6.5 16-4-5.5L4 10.5Z"/></svg>전송</button>
+        <div class="menu plus-menu" role="menu" aria-label="더 보내기">
+          <button role="menuitem" data-go="poll"><span class="mi n"><svg class="i" viewBox="0 0 24 24"><path d="M6 20V11M12 20V5M18 20v-6"/></svg></span><span>투표 만들기<small>항목을 골라 의견 모으기</small></span></button>
+          <button role="menuitem" data-go="todo"><span class="mi t"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg></span><span>할 일 만들기<small>함께 체크하는 목록</small></span></button>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <!-- C5: 투표 만들기 -->
+  <div class="scrim" id="pollDlg">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="pTitle" style="width:480px">
+      <header><div><h2 id="pTitle">투표 만들기</h2><p>홍보실에 보냅니다. 참여자는 누가 어디에 투표했는지 볼 수 있습니다.</p></div><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+      <div class="bd">
+        <div class="field"><label for="pq">질문</label><input id="pq" value="축제 홍보 부스 운영 시간은 언제가 좋을까요?"></div>
+        <div class="field"><label>항목 (2~10개)</label>
+          <div class="optlist">
+            <div class="optrow"><span class="num">1</span><input value="오전 10시 ~ 오후 4시" aria-label="항목 1"><button class="icon-btn" aria-label="항목 1 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="optrow"><span class="num">2</span><input value="오후 1시 ~ 오후 7시" aria-label="항목 2"><button class="icon-btn" aria-label="항목 2 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="optrow"><span class="num">3</span><input placeholder="항목 입력" aria-label="항목 3"><button class="icon-btn" aria-label="항목 3 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <button class="addopt"><svg class="i" viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M12 6v12M6 12h12"/></svg>항목 추가</button>
+          </div>
+        </div>
+      </div>
+      <footer><button class="btn ghost" data-go="base">취소</button><button class="btn primary">투표 보내기</button></footer>
+    </div>
+  </div>
+
+  <!-- C5: 할 일 만들기 -->
+  <div class="scrim" id="todoDlg">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="tTitle" style="width:480px">
+      <header><div><h2 id="tTitle">할 일 만들기</h2><p>대화방 참여자 누구나 체크할 수 있습니다.</p></div><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+      <div class="bd">
+        <div class="field"><label for="tq">제목</label><input id="tq" value="축제 전날 점검"></div>
+        <div class="field"><label>할 일</label>
+          <div class="optlist">
+            <div class="optrow"><span class="num">1</span><input value="부스 천막 설치 확인" aria-label="할 일 1"><button class="icon-btn" aria-label="할 일 1 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="optrow"><span class="num">2</span><input value="현수막 3개 게시" aria-label="할 일 2"><button class="icon-btn" aria-label="할 일 2 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="optrow"><span class="num">3</span><input placeholder="할 일 입력 · Enter로 다음 줄" aria-label="할 일 3"><button class="icon-btn" aria-label="할 일 3 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <button class="addopt"><svg class="i" viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M12 6v12M6 12h12"/></svg>할 일 추가</button>
+          </div>
+        </div>
+      </div>
+      <footer><button class="btn ghost" data-go="base">취소</button><button class="btn primary">할 일 보내기</button></footer>
+    </div>
+  </div>
+</div>
+
+<!-- C4: 잠금 화면 (대화 내용을 완전히 가린다) -->
+<div class="lock" role="dialog" aria-modal="true" aria-labelledby="lkTitle">
+  <div class="box">
+    <img class="mascot" src="assets/turtle-thumbs.png" alt="" style="display:none">
+    <img class="emb" src="assets/emblem.png" alt="음성군">
+    <h2 id="lkTitle">상상톡이 잠겨 있습니다</h2>
+    <p class="why">30분 동안 사용하지 않아 화면을 잠갔습니다.<br>비밀번호를 입력하면 이어서 쓸 수 있어요.</p>
+    <div class="user"><img src="assets/turtle-front.png" alt=""><div><b>박지민</b><small>주무관 · 홍보실</small></div></div>
+    <div class="field"><label for="lkpw">비밀번호</label><input id="lkpw" type="password" autocomplete="current-password"></div>
+    <div class="err" role="alert">비밀번호가 맞지 않습니다. 3번 더 틀리면 로그아웃됩니다.</div>
+    <button class="btn primary">잠금 해제</button>
+    <div class="alt"><button>로그아웃하고 다른 계정으로</button></div>
+  </div>
+</div>
+
+<nav class="switcher" aria-label="시안 화면">
+  <span>2-C</span>
+  <button data-go="base" aria-pressed="true">투표·할 일·워터마크</button>
+  <button data-go="nowm">워터마크 끔</button>
+  <button data-go="plus">＋ 메뉴</button>
+  <button data-go="poll">투표 만들기</button>
+  <button data-go="todo">할 일 만들기</button>
+  <button data-go="lock">잠금 화면</button>
+  <button data-go="lockerr">잠금 해제 실패</button>
+  <a href="admin.html" style="color:#9fe1d8;font-size:12px;font-weight:600;align-self:center;padding:0 10px;white-space:nowrap">관리자 화면 →</a>
+</nav>
+
+<script>
+/* 워터마크: 이름 · 로그인 ID 앞부분 · 날짜. 260×140 간격으로 반복(시안은 스크립트로 채운다). */
+(function(){
+  const wm=document.getElementById('wm'), text='박지민 · 2026012 · 2026-11-17';
+  let html='';
+  for(let y=-40;y<1400;y+=140) for(let x=-120+(y/140%2)*130;x<1800;x+=260) html+=`<span style="left:${x}px;top:${y+120}px">${text}</span>`;
+  wm.innerHTML=html;
+})();
+const $=s=>document.querySelector(s);
+function go(s){
+  if(!s||!document.querySelector(`.switcher [data-go="${s}"]`)) s='base';
+  document.body.dataset.s=s;
+  document.body.classList.toggle('nowm',s==='nowm');
+  document.body.classList.toggle('lockerr',s==='lockerr');
+  document.querySelectorAll('.switcher button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===s));
+  $('#plusBtn').setAttribute('aria-expanded',s==='plus');
+  if(location.hash.slice(1)!==s) history.replaceState(null,'',s==='base'?location.pathname:'#'+s);
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-go]');
+  if(t){e.preventDefault();const s=t.dataset.go;go(document.body.dataset.s===s&&!t.closest('.switcher')?'base':s);return}
+  if(e.target.classList.contains('scrim')) go('base');
+  else if(!e.target.closest('.menu')&&document.body.dataset.s==='plus') go('base');
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!['lock','lockerr'].includes(document.body.dataset.s))go('base')});
+addEventListener('hashchange',()=>go(location.hash.slice(1)));
+go(location.hash.slice(1));
+</script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상상톡 관리 시안</title>
+<!-- v3 2-C: 관리자 화면(/admin) — C1 직원 관리·부서방 동기화, C2 감사 로그. 메신저와 같은 토큰(base-v2.css)을 쓴다. -->
+<link rel="stylesheet" href="base-v2.css">
+<style>
+.adm{height:calc(100vh - 46px);min-height:600px;display:grid;grid-template-columns:232px minmax(0,1fr);grid-template-rows:60px minmax(0,1fr);background:var(--bg)}
+.top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 20px;background:linear-gradient(90deg,var(--navy-700),var(--navy-900));color:#fff}
+.top img{width:34px;height:34px;border-radius:50%;box-shadow:0 0 0 2px #fff}
+.top b{font-size:16px;font-weight:800;letter-spacing:-.02em}
+.top .role{height:22px;padding:0 8px;border-radius:6px;background:rgba(255,255,255,.16);font-size:11.5px;font-weight:700;line-height:22px}
+.top .sp{flex:1}
+.top .who{font-size:13px;color:rgba(255,255,255,.8)}
+.top a{height:34px;padding:0 14px;border-radius:17px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;text-decoration:none}
+.top a:hover{background:rgba(255,255,255,.22)}
+.side{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:4px}
+.nav{height:42px;border-radius:var(--r-md);display:flex;align-items:center;gap:10px;padding:0 12px;font-size:14px;font-weight:600;color:var(--ink-2);text-align:left}
+.nav:hover{background:var(--bg)}
+.nav[aria-current]{background:var(--teal-50);color:var(--teal-700);box-shadow:inset 0 0 0 1px var(--teal-100)}
+.nav .n{margin-left:auto;font-size:12px;color:var(--ink-3);font-weight:600}
+.side .note{margin-top:auto;font-size:11.5px;color:var(--ink-3);line-height:1.55;padding:10px 12px;border-radius:10px;background:var(--bg)}
+.main{overflow:auto;padding:24px 28px 28px;position:relative}
+.ph{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px}
+.ph h1{margin:0;font-size:21px;font-weight:800;letter-spacing:-.03em}
+.ph p{margin:4px 0 0;font-size:13px;color:var(--ink-3)}
+.ph .acts{margin-left:auto;display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px}
+.btn svg.i{width:17px;height:17px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-1)}
+.filters{display:flex;gap:8px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.filters .search{margin:0;width:280px;height:36px}
+select,.filters input[type=date]{height:36px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fff;font:inherit;font-size:13px;color:var(--ink)}
+.filters .cnt{margin-left:auto;font-size:12.5px;color:var(--ink-3)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{position:sticky;top:0;background:#f8fafb;text-align:left;font-size:12px;font-weight:700;color:var(--ink-3);padding:10px 14px;border-bottom:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+tr:hover td{background:#fafcfd}
+tr.inactive td{color:var(--ink-3)}
+.pn{display:flex;align-items:center;gap:10px}
+.pn .av{width:32px;height:32px;border-radius:11px;font-size:12px}
+.pn b{font-weight:700}
+code{font-family:Consolas,"D2Coding",monospace;font-size:12.5px;color:var(--ink-2)}
+.pill{height:22px;padding:0 8px;border-radius:6px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.pill.on{background:var(--lime-100);color:var(--st-active-ink)}
+.pill.off{background:var(--line-2);color:var(--st-off-ink)}
+.pill.admin{background:var(--navy-100);color:var(--navy-700)}
+.pill.owner{background:var(--sun-100);color:var(--sun-700,#c4650c)}
+.pill.member{background:var(--bg);color:var(--ink-2)}
+.pill.ok{background:var(--lime-100);color:var(--st-active-ink)}
+.pill.fail{background:var(--danger-50);color:var(--danger-600)}
+.ra{display:flex;gap:2px;justify-content:flex-end}
+.ra .txt-btn.danger{color:var(--danger-600)} .ra .txt-btn.danger:hover{background:var(--danger-50)}
+.pager{display:flex;align-items:center;justify-content:center;gap:4px;padding:12px}
+.pager button{min-width:32px;height:32px;border-radius:8px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.pager button[aria-current]{background:var(--ink);color:#fff}
+
+/* 직원 추가·수정 패널 */
+.drawer{position:fixed;top:0;right:0;bottom:46px;width:440px;max-width:100%;background:var(--panel);box-shadow:-18px 0 48px rgba(16,40,64,.18);display:none;flex-direction:column;z-index:50}
+.drawer header{height:64px;display:flex;align-items:center;gap:8px;padding:0 16px 0 24px;border-bottom:1px solid var(--line)}
+.drawer h2{margin:0;font-size:17px;font-weight:800}
+.drawer header .icon-btn{margin-left:auto}
+.drawer .bd{flex:1;overflow:auto;padding:18px 24px;display:flex;flex-direction:column;gap:14px}
+.drawer footer{padding:14px 24px;border-top:1px solid var(--line-2);display:flex;justify-content:flex-end;gap:8px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.field select{width:100%;height:42px;border-radius:var(--r-md)}
+.idrow{display:flex;align-items:center;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.idrow input{border:0!important;box-shadow:none!important;flex:1;border-radius:0}
+.idrow span{padding:0 12px;font-size:13px;color:var(--ink-3);background:var(--bg);height:42px;line-height:42px;border-left:1px solid var(--line)}
+.info{display:flex;gap:10px;padding:12px 14px;border-radius:12px;background:var(--navy-100);color:var(--navy-700);font-size:12.5px;line-height:1.55}
+.info svg.i{width:18px;height:18px;flex:none;margin-top:1px}
+.info.warn{background:var(--sun-100);color:#8a4a08}
+.sect{font-size:12px;font-weight:700;color:var(--ink-3);padding-top:6px;border-top:1px solid var(--line-2)}
+
+/* 부서방 동기화 */
+.sync{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+.sync .panel{overflow:hidden}
+.sumcard{padding:18px}
+.sumcard h3{margin:0 0 4px;font-size:15px;font-weight:800}
+.sumcard p{margin:0 0 14px;font-size:12.5px;color:var(--ink-3);line-height:1.55}
+.sumcard .btn{width:100%;justify-content:center}
+.result{margin-top:14px;padding:12px 14px;border-radius:12px;background:var(--teal-50);border:1px solid var(--teal-100);font-size:13px}
+.result b{display:block;color:var(--teal-700);margin-bottom:6px}
+.result dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+.result dt{color:var(--ink-2)} .result dd{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.diff{font-size:12px;font-weight:700}
+.diff.add{color:var(--st-active-ink)} .diff.rm{color:var(--danger-600)} .diff.new{color:var(--navy-700)}
+
+/* 감사 로그 */
+.act{font-family:Consolas,"D2Coding",monospace;font-size:12px;padding:2px 6px;border-radius:5px;background:var(--bg);color:var(--ink-2)}
+.keep{font-size:12px;color:var(--ink-3)}
+
+/* 확인 */
+.confirm .bd b{color:var(--ink)}
+
+/* 화면 전환 */
+.view{display:none}
+body[data-s=users] #vUsers, body[data-s=add] #vUsers, body[data-s=deact] #vUsers, body[data-s=pw] #vUsers{display:block}
+body[data-s=dept] #vDept, body[data-s=synced] #vDept{display:block}
+body[data-s=audit] #vAudit{display:block}
+body[data-s=add] #addDrawer, body[data-s=pw] #pwDrawer{display:flex}
+body[data-s=deact] #deactDlg{display:grid}
+.result{display:none} body[data-s=synced] .result{display:block}
+body[data-s=synced] .pending{display:none}
+</style>
+</head>
+<body data-s="users">
+<div class="adm">
+  <header class="top">
+    <img src="assets/emblem.png" alt="음성군">
+    <b>상상톡 관리</b><span class="role">관리자</span>
+    <span class="sp"></span>
+    <span class="who">윤성호 · 자치행정과장</span>
+    <a href="main-screen-v3c.html"><svg class="i" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M15 6l-6 6 6 6"/></svg>메신저로 돌아가기</a>
+  </header>
+
+  <nav class="side" aria-label="관리 메뉴">
+    <button class="nav" data-go="users" id="nUsers"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg>직원 관리<span class="n">12</span></button>
+    <button class="nav" data-go="dept" id="nDept"><svg class="i" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></svg>부서 대화방<span class="n">2</span></button>
+    <button class="nav" data-go="audit" id="nAudit"><svg class="i" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10.5A.5.5 0 0 1 6.5 20V4a.5.5 0 0 1 .5-.5Z"/><path d="M14 3.5V8h4M9.5 12h5M9.5 15.5h5"/></svg>감사 로그</button>
+    <div class="note">관리 화면의 모든 변경은 감사 로그에 남습니다.<br>메시지 내용과 비밀번호는 남기지 않습니다.</div>
+  </nav>
+
+  <main class="main">
+    <!-- C1: 직원 관리 -->
+    <section class="view" id="vUsers">
+      <div class="ph">
+        <div><h1>직원 관리</h1><p>계정 만들기, 정보 고치기, 퇴직·복귀 처리를 합니다. 정규직은 조직도 연계 뒤 자동으로 들어옵니다.</p></div>
+        <div class="acts"><button class="btn primary" data-go="add"><svg class="i" viewBox="0 0 24 24"><circle cx="10" cy="8.5" r="3.2"/><path d="M3.8 19.5c.8-3.4 3.3-5.1 6.2-5.1 1.4 0 2.6.3 3.7 1M18 13v6M15 16h6"/></svg>직원 추가</button></div>
+      </div>
+      <div class="panel">
+        <div class="filters">
+          <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="이름, 로그인 ID 검색"></label>
+          <select aria-label="부서"><option>모든 부서</option><option>홍보실</option><option>자치행정과</option></select>
+          <select aria-label="상태"><option>재직 중</option><option>퇴직</option><option>전체</option></select>
+          <span class="cnt">재직 11명 · 퇴직 1명</span>
+        </div>
+        <table>
+          <thead><tr><th>이름</th><th>로그인 ID</th><th>부서</th><th>직위</th><th>권한</th><th>상태</th><th style="text-align:right">관리</th></tr></thead>
+          <tbody>
+            <tr><td><span class="pn"><span class="av c1">도윤</span><b>김도윤</b></span></td><td><code>2018034</code></td><td>홍보실</td><td>홍보실장</td><td><span class="pill member">일반</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button><button class="txt-btn danger" data-go="deact">퇴직 처리</button></span></td></tr>
+            <tr><td><span class="pn"><span class="av c4">서준</span><b>이서준</b></span></td><td><code>2019112</code></td><td>홍보실</td><td>홍보기획팀장</td><td><span class="pill member">일반</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button><button class="txt-btn danger" data-go="deact">퇴직 처리</button></span></td></tr>
+            <tr><td><span class="pn"><span class="av c2" style="background:var(--lime-100);overflow:hidden"><img src="assets/turtle-front.png" alt="" style="width:150%;margin-top:28%;mix-blend-mode:multiply"></span><b>박지민</b></span></td><td><code>2026012</code></td><td>홍보실</td><td>주무관</td><td><span class="pill member">일반</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button><button class="txt-btn danger" data-go="deact">퇴직 처리</button></span></td></tr>
+            <tr><td><span class="pn"><span class="av c2">성호</span><b>윤성호</b></span></td><td><code>2011007</code></td><td>자치행정과</td><td>자치행정과장</td><td><span class="pill admin">관리자</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button></span></td></tr>
+            <tr><td><span class="pn"><span class="av c6">지수</span><b>한지수</b></span></td><td><code>2015203</code></td><td>자치행정과</td><td>자치행정팀장</td><td><span class="pill owner">소유자</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button></span></td></tr>
+            <tr><td><span class="pn"><span class="av c3">하람</span><b>정하람</b></span></td><td><code>T2026-03</code></td><td>홍보실</td><td>기간제 근로자</td><td><span class="pill member">일반</span></td><td><span class="pill on">재직</span></td><td><span class="ra"><button class="txt-btn">수정</button><button class="txt-btn" data-go="pw">비밀번호</button><button class="txt-btn danger" data-go="deact">퇴직 처리</button></span></td></tr>
+            <tr class="inactive"><td><span class="pn"><span class="av" style="background:#c9d2da">현우</span><b>배현우</b></span></td><td><code>2017088</code></td><td>자치행정과</td><td>주무관</td><td><span class="pill member">일반</span></td><td><span class="pill off">퇴직 · 10월 31일</span></td><td><span class="ra"><button class="txt-btn">복귀 처리</button></span></td></tr>
+          </tbody>
+        </table>
+        <div class="pager"><button aria-label="이전 쪽">‹</button><button aria-current="page">1</button><button>2</button><button aria-label="다음 쪽">›</button></div>
+      </div>
+    </section>
+
+    <!-- C1: 부서 대화방 -->
+    <section class="view" id="vDept">
+      <div class="ph"><div><h1>부서 대화방</h1><p>직원 정보의 "부서"를 기준으로 부서별 대화방을 만들고 인원을 맞춥니다. 조직도가 연계되면 조직도를 기준으로 합니다.</p></div></div>
+      <div class="sync">
+        <div class="panel">
+          <table>
+            <thead><tr><th>부서</th><th>대화방</th><th>인원</th><th>동기화하면</th></tr></thead>
+            <tbody>
+              <tr><td><b>홍보실</b></td><td>홍보실</td><td>5명</td><td><span class="pending"><span class="diff add">+1 정하람</span></span></td></tr>
+              <tr><td><b>자치행정과</b></td><td>자치행정과</td><td>4명</td><td><span class="pending"><span class="diff rm">−1 배현우(퇴직)</span></span></td></tr>
+              <tr><td><b>기획예산과</b></td><td style="color:var(--ink-3)">없음</td><td>2명</td><td><span class="pending"><span class="diff new">새로 만듦 · 2명</span></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel sumcard">
+          <h3>부서방 동기화</h3>
+          <p>마지막 동기화: 11월 16일 오후 6:12 (윤성호)<br>부서방은 직원이 나가거나 이름을 바꿀 수 없습니다. 대화 기록은 지워지지 않습니다.</p>
+          <button class="btn primary" data-go="synced"><svg class="i" viewBox="0 0 24 24"><path d="M19 8.5A7.5 7.5 0 0 0 5.6 7M5 15.5A7.5 7.5 0 0 0 18.4 17"/><path d="M5 3.5V7h3.5M19 20.5V17h-3.5"/></svg>지금 동기화</button>
+          <div class="result" role="status">
+            <b>동기화를 마쳤습니다 · 오전 11:42</b>
+            <dl><dt>새로 만든 대화방</dt><dd>1개</dd><dt>추가한 인원</dt><dd>3명</dd><dt>뺀 인원</dt><dd>1명</dd></dl>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- C2: 감사 로그 -->
+    <section class="view" id="vAudit">
+      <div class="ph"><div><h1>감사 로그</h1><p>로그인, 파일 주고받기, 메시지 회수, 관리 작업 기록입니다. <span class="keep">보존 기간 12개월</span></p></div></div>
+      <div class="panel">
+        <div class="filters">
+          <input type="date" value="2026-11-01" aria-label="시작일">~<input type="date" value="2026-11-17" aria-label="종료일">
+          <select aria-label="직원"><option>모든 직원</option><option>박지민</option></select>
+          <select aria-label="동작"><option>모든 동작</option><option>로그인</option><option>로그인 실패</option><option>로그아웃</option><option>파일 내려받기</option><option>파일 올리기</option><option>메시지 회수</option><option>관리 작업</option></select>
+          <span class="cnt">142건</span>
+        </div>
+        <table>
+          <thead><tr><th>시각</th><th>직원</th><th>IP</th><th>동작</th><th>대상</th><th>결과</th></tr></thead>
+          <tbody>
+            <tr><td>11월 17일 11:42:08</td><td>윤성호</td><td><code>10.20.4.17</code></td><td><span class="act">admin_dept_sync</span> 부서방 동기화</td><td>대화방 1 · +3 · −1</td><td><span class="pill ok">성공</span></td></tr>
+            <tr><td>11월 17일 10:41:55</td><td>박지민</td><td><code>10.20.4.52</code></td><td><span class="act">recall</span> 메시지 회수</td><td>메시지 #1209</td><td><span class="pill ok">성공</span></td></tr>
+            <tr><td>11월 17일 10:12:30</td><td>강예린</td><td><code>10.20.5.8</code></td><td><span class="act">file_upload</span> 파일 올리기</td><td>행사_현장_01.jpg</td><td><span class="pill ok">성공</span></td></tr>
+            <tr><td>11월 17일 10:05:11</td><td>김도윤</td><td><code>10.20.4.9</code></td><td><span class="act">file_download</span> 파일 내려받기</td><td>2026_군민축제_홍보계획.pdf</td><td><span class="pill ok">성공</span></td></tr>
+            <tr><td>11월 17일 08:59:58</td><td>박지민</td><td><code>10.20.4.52</code></td><td><span class="act">login</span> 로그인</td><td>—</td><td><span class="pill ok">성공</span></td></tr>
+            <tr><td>11월 17일 08:59:42</td><td>2026012</td><td><code>10.20.4.52</code></td><td><span class="act">login_fail</span> 로그인 실패</td><td>—</td><td><span class="pill fail">실패</span></td></tr>
+          </tbody>
+        </table>
+        <div class="pager"><button aria-label="이전 쪽">‹</button><button aria-current="page">1</button><button>2</button><button>3</button><span style="color:var(--ink-3)">…</span><button>8</button><button aria-label="다음 쪽">›</button></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- C1: 직원 추가 -->
+<aside class="drawer" id="addDrawer" role="dialog" aria-modal="true" aria-labelledby="aTitle">
+  <header><h2 id="aTitle">직원 추가</h2><button class="icon-btn" aria-label="닫기" data-go="users"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+  <div class="bd">
+    <div class="info"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>기간제·파견 등 조직도에 없는 직원을 직접 만듭니다. 정규직은 조직도 연계로 자동 등록됩니다.</div>
+    <div class="field"><label for="fn">이름</label><input id="fn" value="정하람"></div>
+    <div class="field"><label for="lid">로그인 ID (사번)</label><div class="idrow"><input id="lid" value="T2026-03"><span>@eumseong.local</span></div><div class="help">직원은 사번만 입력해 로그인합니다. 도메인은 이관 때 정해집니다.</div></div>
+    <div class="two">
+      <div class="field"><label for="dp">부서</label><select id="dp"><option>홍보실</option><option>자치행정과</option></select></div>
+      <div class="field"><label for="ps">직위</label><input id="ps" value="기간제 근로자"></div>
+    </div>
+    <div class="field"><label for="pw1">첫 비밀번호</label><input id="pw1" type="password" autocomplete="new-password"><div class="help">8자 이상. 직원에게 따로 전달하고 첫 로그인 뒤 바꾸게 안내하세요.</div></div>
+    <div class="sect">저장하면 부서 대화방에도 자동으로 들어갑니다(다음 동기화 때).</div>
+  </div>
+  <footer><button class="btn ghost" data-go="users">취소</button><button class="btn primary">직원 추가</button></footer>
+</aside>
+
+<!-- C1: 비밀번호 (방식 결정 전) -->
+<aside class="drawer" id="pwDrawer" role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+  <header><h2 id="pwTitle">비밀번호 초기화 · 김도윤</h2><button class="icon-btn" aria-label="닫기" data-go="users"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+  <div class="bd">
+    <div class="info warn"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4M12 17h.01"/></svg><span>관리 화면에서는 아직 다른 직원의 비밀번호를 바꿀 수 없습니다.<br><b>서버 관리자에게 요청</b>해 주세요. 요청할 때 아래 정보를 알려 주면 됩니다.</span></div>
+    <div class="field"><label>요청할 내용</label><input value="김도윤 · 2018034 · 홍보실 — 비밀번호 초기화" readonly></div>
+  </div>
+  <footer><button class="btn ghost" data-go="users">닫기</button><button class="btn primary">내용 복사</button></footer>
+</aside>
+
+<!-- C1: 퇴직 처리 확인 -->
+<div class="scrim" id="deactDlg" style="position:fixed;bottom:46px">
+  <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="dTitle" aria-describedby="dDesc">
+    <header><img src="assets/turtle-side.png" alt=""><h2 id="dTitle">김도윤 님을 퇴직 처리할까요?</h2></header>
+    <div class="bd" id="dDesc" style="word-break:keep-all">바로 로그아웃되고 다시 로그인할 수 없습니다.<br>주고받은 대화와 파일은 그대로 남습니다.<br>부서 대화방에서는 다음 동기화 때 빠집니다.<br>나중에 <b>복귀 처리</b>로 되살릴 수 있습니다.</div>
+    <footer><button class="btn ghost" data-go="users">취소</button><button class="btn danger">퇴직 처리</button></footer>
+  </div>
+</div>
+
+<nav class="switcher" aria-label="시안 화면">
+  <span>관리</span>
+  <button data-go="users" aria-pressed="true">직원 목록</button>
+  <button data-go="add">직원 추가</button>
+  <button data-go="pw">비밀번호</button>
+  <button data-go="deact">퇴직 처리</button>
+  <button data-go="dept">부서 대화방</button>
+  <button data-go="synced">동기화 완료</button>
+  <button data-go="audit">감사 로그</button>
+</nav>
+
+<script>
+const $=s=>document.querySelector(s);
+function go(s){
+  if(!s||!document.querySelector(`.switcher [data-go="${s}"]`)) s='users';
+  document.body.dataset.s=s;
+  document.querySelectorAll('.switcher button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===s));
+  const sec=['dept','synced'].includes(s)?'nDept':s==='audit'?'nAudit':'nUsers';
+  document.querySelectorAll('.nav').forEach(n=>n.toggleAttribute('aria-current',n.id===sec));
+  if(location.hash.slice(1)!==s) history.replaceState(null,'',s==='users'?location.pathname:'#'+s);
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-go]');
+  if(t){e.preventDefault();go(t.dataset.go);return}
+  if(e.target.classList.contains('scrim')) go('users');
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&['add','pw','deact'].includes(document.body.dataset.s))go('users')});
+addEventListener('hashchange',()=>go(location.hash.slice(1)));
+go(location.hash.slice(1));
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@
 - 만드는 스크립트: `ops/backup.ps1` (Windows PowerShell 5.1)
 - 위치: `C:\SangsangTalk-backup\<yyyyMMdd-HHmmss>\zulip-backup-<yyyyMMdd-HHmmss>.tar.gz`
 - 쪽지 인덱스 사본: 같은 폴더의 `notes.json`(`C:\SangsangTalk\web\data\notes.json` 복사본, 원본이 없으면 경고 로그만 남기고 생략)
+- 2단계 상상톡 데이터(`web\data`의 `notices.json`·`prefs.json`·`admin-meta.json`·`audit\`)는 `backup.ps1`(개발 PC용)이 복사하지 **않는다**. 개발 PC에서 필요하면 `web\data` 폴더를 직접 복사해 둔다. 운영(리눅스) `backup.sh`는 복사한다(아래 리눅스 절).
 - 로그: `C:\SangsangTalk-backup\backup.log`
 - 보관: 30일 지난 날짜 폴더는 백업이 성공할 때 자동 삭제(`-RetentionDays`로 변경). 이름이 `yyyyMMdd-HHmmss` 형식인 폴더만 지운다.
 - 내용(Zulip 공식 `manage.py backup` 형식):
@@ -134,6 +135,20 @@ install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
 ## 백업: `ops/backup.sh`
 
 `ops/backup.ps1`과 같은 동작(`manage.py backup` → `docker compose cp` → tar 목록 검사 → 쪽지 인덱스 사본 → 보관 일수 지난 폴더 삭제 → 로그, 실패 시 종료 코드 1)을 bash로 한다.
+여기에 더해 2단계 상상톡 데이터를 같은 회차 폴더의 `web-data/`에 복사한다(`backup.ps1`에는 없음).
+
+| `web/data` 파일 | 내용 | 백업 |
+|---|---|---|
+| `notes.json` | 쪽지 인덱스(Zulip 메시지 ID) | `<회차>/notes.json` |
+| `notices.json` | 대화방 공지(메시지 ID, 등록자, 시각) | `<회차>/web-data/notices.json` |
+| `prefs.json` | 사용자 설정(즐겨찾기, 알림 끄기, 방해 금지) | `<회차>/web-data/prefs.json` |
+| `admin-meta.json` | CMS 관리 정보(퇴직 처리 시각, 다음 로그인 때 비밀번호 바꾸기) | `<회차>/web-data/admin-meta.json` |
+| `audit/YYYY-MM.jsonl` | 감사 로그(보존 `AUDIT_KEEP_MONTHS`개월) | `<회차>/web-data/audit/` |
+| `sessions.json` | 암호화된 로그인 세션(Zulip API 키 포함) | **하지 않음.** 복원 뒤에는 직원이 다시 로그인한다 |
+
+- 아직 만들어지지 않은 파일(`prefs.json`은 처음 설정을 바꿀 때 생기는 등)은 `[INFO] … 건너뜀`만 남긴다. 있는데 복사하지 못하면 `[WARN]`(전체 백업) 또는 `[ERROR] 백업 실패`(`--notes-only`)다.
+- 폴더 위치는 기본으로 `--notes-file`이 있는 폴더이고, `--web-data-dir`로 바꿀 수 있다.
+- 감사 로그 보존 기간(`AUDIT_KEEP_MONTHS`)이 지나 서버가 지운 달의 파일도 백업 회차에는 남는다. 백업 보관 일수(`--retention-days`)를 기관 보존 기준과 함께 정한다.
 
 - 위치: `/var/backups/sangsangtalk/<yyyyMMdd-HHmmss>/zulip-backup-<yyyyMMdd-HHmmss>.tar.gz` (`--backup-root`)
 - 로그: `/var/backups/sangsangtalk/backup.log`
@@ -149,8 +164,8 @@ install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
   --env-file /etc/sangsangtalk/zulip.env
 ```
 
-3계층에서는 쪽지 인덱스(`web/data/notes.json`)가 [웹] 서버에 있으므로 [앱] 서버 실행에서는 `[WARN] 쪽지 인덱스 파일이 없어 건너뜁니다`가 정상이다.
-[웹] 서버에서는 같은 스크립트를 쪽지만 백업하도록 돌린다(같은 이름 규칙의 폴더에 `notes.json`만 생긴다):
+쪽지 인덱스와 상상톡 데이터(`web/data`)는 [웹] 서버에 있으므로 [앱] 서버 실행에서는 `[WARN] 쪽지 인덱스 파일이 없어 건너뜁니다`와 `상상톡 데이터 폴더가 없어 건너뜁니다`가 정상이다.
+[웹] 서버에서는 같은 스크립트를 `--notes-only`로 돌린다(같은 이름 규칙의 폴더에 `notes.json`과 `web-data/`가 생긴다):
 
 ```bash
 sudo -u sangsangtalk /opt/sangsangtalk/ops/backup.sh --notes-only \
@@ -220,13 +235,33 @@ ops/backup.sh --compose-file "$CF" --env-file /etc/sangsangtalk/zulip.env
 "${C[@]}" exec -T zulip rm -rf /tmp/restore
 ```
 
-7) 쪽지 인덱스 되돌리기 ([웹] 서버, root 셸):
+7) 쪽지 인덱스·상상톡 데이터 되돌리기 ([웹] 서버, root 셸):
 
 ```bash
 systemctl stop sangsangtalk-web
-install -o sangsangtalk -g sangsangtalk -m 0600 /var/backups/sangsangtalk-web/<가장 가까운 회차>/notes.json /opt/sangsangtalk/web/data/notes.json
+src=/var/backups/sangsangtalk-web/<가장 가까운 회차>
+dst=/opt/sangsangtalk/web/data
+install -o sangsangtalk -g sangsangtalk -m 0600 "$src/notes.json" "$dst/notes.json"
+# 2단계 데이터: 그 회차에 있는 것만 되돌린다(없는 파일은 그 회차 때 아직 없던 것)
+for f in notices.json prefs.json admin-meta.json; do
+  if [ -f "$src/web-data/$f" ]; then
+    install -o sangsangtalk -g sangsangtalk -m 0600 "$src/web-data/$f" "$dst/$f"
+  fi
+done
+# 감사 로그는 덮어쓰지 않고 합친다: 백업에만 있는 달 파일만 되살리고 지금 있는 파일은 그대로 둔다
+if [ -d "$src/web-data/audit" ]; then
+  install -d -o sangsangtalk -g sangsangtalk -m 0700 "$dst/audit"
+  for f in "$src"/web-data/audit/*.jsonl; do
+    [ -e "$f" ] && cp -n -p "$f" "$dst/audit/"
+  done
+  chown -R sangsangtalk:sangsangtalk "$dst/audit"
+fi
 systemctl start sangsangtalk-web
 ```
+
+- `notices.json`도 메시지 ID를 가리키므로 쪽지 인덱스처럼 Zulip 백업과 가장 가까운 회차를 쓴다.
+- `admin-meta.json`을 되돌리면 백업 이후에 켠 "다음 로그인 때 비밀번호 바꾸기"와 퇴직 처리 시각이 백업 시점으로 돌아간다. 복원 뒤 CMS에서 다시 확인한다.
+- 서버는 시작할 때 `AUDIT_KEEP_MONTHS`보다 오래된 감사 로그 파일을 지우므로, 되살린 옛 달 파일도 보존 기간 밖이면 바로 지워진다. 그런 기록은 백업 폴더에서 직접 본다.
 
 확인: 관리 PC에서 `https://<ZULIP_EXTERNAL_HOST>` 로그인, 직원 PC 상상톡 앱에서 대화 목록·최근 메시지·첨부 열기.
 주의사항(설정 폴더는 복원하지 않음, 버전 일치, `--clean` 경고 등)은 위 Windows 절과 같다. 리눅스 복원 절차는 **아직 실제로 해 보지 않았다(미검증)** — 시험 환경에서 먼저 확인한다.

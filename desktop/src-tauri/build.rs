@@ -3,12 +3,32 @@ use std::path::{Path, PathBuf};
 /// Default app address (local development).
 const DEFAULT_APP_URL: &str = "http://127.0.0.1:43123/";
 const APP_URL_VAR: &str = "SANGSANGTALK_APP_URL";
+const CAPTURE_BLOCK_VAR: &str = "SANGSANGTALK_CAPTURE_BLOCK";
+
+/// SANGSANGTALK_CAPTURE_BLOCK: unset or "0" = off (default), "1" = exclude the main
+/// window from screen capture. Any other value, including empty, fails the build.
+fn capture_block() -> bool {
+    match std::env::var(CAPTURE_BLOCK_VAR) {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "0" => false,
+        Ok(value) if value == "1" => true,
+        Ok(value) => panic!("{CAPTURE_BLOCK_VAR}={value:?} is invalid; use 1 (on) or 0 (off)"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{CAPTURE_BLOCK_VAR} is not valid Unicode; use 1 (on) or 0 (off)")
+        }
+    }
+}
 
 fn main() {
     let app_url = app_url();
     // The validated address is compiled in as `env!("SANGSANGTALK_APP_URL")`.
     println!("cargo:rustc-env={APP_URL_VAR}={app_url}");
     println!("cargo:rerun-if-env-changed={APP_URL_VAR}");
+
+    // Compiled in as `env!("SANGSANGTALK_CAPTURE_BLOCK")`: "1" or "0".
+    let capture_block = if capture_block() { "1" } else { "0" };
+    println!("cargo:rustc-env={CAPTURE_BLOCK_VAR}={capture_block}");
+    println!("cargo:rerun-if-env-changed={CAPTURE_BLOCK_VAR}");
 
     let capabilities = write_capabilities(&app_url);
     // tauri-build wants a &'static str; build scripts run once, so leaking is fine.

@@ -1,0 +1,150 @@
+/* 상상톡 시안 v3 2-A 컴포넌트 — base-v2.css 다음에 불러 쓴다(main-screen-v3*.html). */
+/* ───────────────── v3 추가 토큰 ───────────────── */
+:root{
+  --sun-700:#c4650c;           /* 안 읽은 사람 수·멘션 글자 (sun-500은 글자로 쓰면 대비가 낮다) */
+  --mention-bg:#fff4e5;        /* 나를 멘션한 말풍선 */
+  --hl:#ffe08a;                /* 검색어 강조 */
+  --notice-bg:#fffaf2;         /* 공지 바 */
+}
+
+/* ───────── A6: 내 부서 아바타·표시 ───────── */
+.av.dept{background:var(--teal-50);color:var(--teal-700)}
+.av.dept svg.i{width:24px;height:24px}
+.tag-dept{height:18px;padding:0 6px;border-radius:5px;background:var(--teal-50);color:var(--teal-700);font-size:11px;font-weight:700;line-height:18px;flex:none}
+/* 나를 멘션한 대화방: 안읽음 배지 앞 @ */
+.badge.mbadge{min-width:18px;padding:0;background:var(--sun-700);color:#fff}
+
+/* ───────── A1: 시간 묶음(안 읽은 사람 수 · 수정됨 · 시간) ───────── */
+.stamp{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+.msg.mine .stamp{align-items:flex-end}
+.unread{font-size:11.5px;font-weight:800;color:var(--sun-700);line-height:1.2;padding:0 3px;margin:0 -3px;border-radius:4px;font-variant-numeric:tabular-nums}
+.unread:hover{background:var(--sun-100)}
+.ed{font-size:11px;color:var(--ink-3)}
+
+/* ───────── A3: 인용 상자·멘션 ───────── */
+.quote{display:block;width:100%;text-align:left;margin:0 0 6px;padding:6px 10px 7px;border-radius:8px;border-left:3px solid var(--teal-500);background:var(--bg);font-size:12.5px;line-height:1.45;color:var(--ink-2)}
+.quote b{display:block;font-size:12px;color:var(--teal-700)}
+.quote span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.quote:hover{background:var(--line-2)}
+.msg.mine .quote{background:rgba(255,255,255,.16);border-left-color:rgba(255,255,255,.75);color:rgba(255,255,255,.9)}
+.msg.mine .quote b{color:#fff}
+.msg.mine .quote:hover{background:rgba(255,255,255,.24)}
+.quote.gone span{color:var(--ink-3)}
+.at{font-weight:700;color:var(--teal-700)}
+.msg.mine .at{color:#fff;text-decoration:underline;text-underline-offset:2px}
+.at.me{color:var(--sun-700);background:#ffe6c7;border-radius:4px;padding:0 3px}
+.bubble.mention{background:var(--mention-bg);box-shadow:inset 3px 0 0 var(--sun-500),var(--shadow-1)}
+.who .for-me{margin-left:6px;font-size:11px;font-weight:700;color:var(--sun-700)}
+
+/* ───────── A4: 회수·수정 ───────── */
+.bubble.recalled{background:transparent;box-shadow:none;border:1px dashed #c3ccd4;color:var(--ink-3);display:flex;align-items:center;gap:6px;font-size:13.5px}
+.bubble.recalled svg.i{width:16px;height:16px}
+.msg.mine .bubble.recalled{background:transparent;color:var(--ink-3)}
+.bubble.editing{outline:2px dashed var(--teal-500);outline-offset:3px}
+.confirm .bd{word-break:keep-all}
+
+/* ───────── 말풍선 동작 막대·메뉴 ───────── */
+.msg .row{position:relative}
+.acts-bar{position:absolute;top:-16px;right:-8px;z-index:4;display:none;gap:1px;padding:3px;border-radius:10px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-2)}
+.msg.mine .acts-bar{right:auto;left:-8px}
+.acts-bar .icon-btn{width:28px;height:28px;border-radius:7px}
+.acts-bar .icon-btn svg.i{width:17px;height:17px}
+.msg:hover .acts-bar,.msg.focus .acts-bar{display:flex}
+.msg.focus .bubble{box-shadow:0 0 0 2px var(--teal-100),var(--shadow-1)}
+.msg-menu{bottom:calc(100% + 18px);width:210px}
+.msg.mine .msg-menu{left:-8px}
+.msg:not(.mine) .msg-menu{right:-8px}
+.menu button:disabled{color:#b3bcc5;cursor:default}
+.menu button:disabled:hover{background:none}
+.menu .why{font-size:11.5px;color:var(--ink-3);padding:4px 12px 6px;line-height:1.45;word-break:keep-all}
+.menu kbd{margin-left:auto;font:inherit;font-size:11.5px;color:var(--ink-3)}
+
+/* ───────── A1: 읽은 사람 보기 팝오버 ───────── */
+.readers{position:absolute;z-index:30;bottom:calc(100% + 8px);right:0;width:272px;padding:12px;border-radius:14px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-3);display:none;text-align:left}
+.readers h3{margin:0 0 10px;font-size:14px;font-weight:800;display:flex;align-items:center}
+.readers h3 .icon-btn{margin-left:auto;width:28px;height:28px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:3px;border-radius:10px;background:var(--bg);margin-bottom:8px}
+.seg button{height:30px;border-radius:8px;font-size:12.5px;font-weight:700;color:var(--ink-3)}
+.seg button[aria-selected=true]{background:#fff;color:var(--ink);box-shadow:var(--shadow-1)}
+.seg .n{color:var(--sun-700);margin-left:3px}
+.plist{max-height:200px;overflow:auto}
+.pl{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 4px;border-radius:8px}
+.pl b{font-size:13.5px;display:block}
+.pl em{font-style:normal;font-size:11.5px;color:var(--ink-3)}
+.readers .foot{font-size:11.5px;color:var(--ink-3);margin-top:6px;padding-top:8px;border-top:1px solid var(--line-2)}
+
+/* ───────── A5: 공지 바 ───────── */
+.notice-bar{position:relative;z-index:2;margin:10px 20px 0;border-radius:var(--r-md);background:var(--notice-bg);border:1px solid #f6dcbc;box-shadow:var(--shadow-1)}
+.nb-row{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 6px 0 12px}
+.nb-ic{width:26px;height:26px;border-radius:8px;background:var(--sun-100);color:var(--sun-700);display:grid;place-items:center;flex:none}
+.nb-ic svg.i{width:16px;height:16px}
+.nb-row .lbl{font-size:12px;font-weight:800;color:var(--sun-700);flex:none}
+.nb-row .txt{flex:1;min-width:0;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.nb-row .icon-btn{width:30px;height:30px;color:var(--ink-3)}
+.nb-row .icon-btn svg.i{width:17px;height:17px}
+.nb-more{display:none;padding:0 14px 12px 48px}
+.nb-more p{margin:0 0 8px;font-size:13.5px;line-height:1.6;color:var(--ink)}
+.nb-more .meta{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-3)}
+.nb-more .meta .txt-btn{height:26px;padding:0 8px;font-size:12px}
+.nb-more .meta .txt-btn.off{color:var(--ink-2)}
+.nb-more .meta .txt-btn.off:hover{background:var(--line-2)}
+.notice-bar.open .nb-row .txt{white-space:normal;visibility:hidden;height:0}
+.notice-bar.open .nb-more{display:block}
+.notice-bar.open .chev-ic{transform:rotate(180deg)}
+
+/* ───────── A3·A4: 입력창 맥락 줄(답장·수정) + 멘션 자동완성 ───────── */
+.ctx{display:none;align-items:center;gap:10px;margin:8px 8px 0;padding:8px 6px 8px 12px;border-radius:10px;background:var(--bg);border-left:3px solid var(--teal-500)}
+.ctx svg.i{width:17px;height:17px;color:var(--teal-700)}
+.ctx div{min-width:0;flex:1}
+.ctx b{display:block;font-size:12.5px;color:var(--teal-700)}
+.ctx span{display:block;font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx .icon-btn{width:28px;height:28px}
+.ctx .icon-btn svg.i{color:var(--ink-3)}
+.mention-pop{position:absolute;left:12px;bottom:calc(100% + 8px);width:320px;padding:6px;border-radius:14px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-3);display:none;z-index:10}
+.mention-pop .hd{font-size:11.5px;font-weight:700;color:var(--ink-3);padding:6px 10px 4px}
+.opt{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 10px;border-radius:9px;cursor:pointer}
+.opt[aria-selected=true]{background:var(--teal-50);box-shadow:inset 0 0 0 1px var(--teal-100)}
+.opt b{font-size:13.5px}
+.opt em{font-style:normal;font-size:12px;color:var(--ink-3);margin-left:6px}
+.opt .av .dot{width:10px;height:10px;right:-3px;bottom:-3px}
+.mention-pop .ft{font-size:11px;color:var(--ink-3);padding:6px 10px 3px;border-top:1px solid var(--line-2);margin-top:4px}
+.tools .at-btn{width:34px;height:34px;border-radius:10px;font-size:16px;font-weight:700;color:var(--ink-2)}
+.tools .at-btn:hover{background:var(--bg);color:var(--ink)}
+
+/* ───────── A2: 메시지 검색 (목록 영역) ───────── */
+.search .clear{width:22px;height:22px;border-radius:50%;display:none;place-items:center;background:#c9d2da;color:#fff}
+.search .clear svg.i{width:12px;height:12px;stroke-width:2.6}
+.stabs{display:flex;gap:18px;padding:10px 20px 0;border-bottom:1px solid var(--line)}
+.stabs button{height:34px;font-size:13.5px;font-weight:700;color:var(--ink-3);border-bottom:2px solid transparent;margin-bottom:-1px}
+.stabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ink)}
+.stabs .n{font-weight:600;margin-left:3px}
+.sres{flex:1;overflow:auto;padding:4px 10px 10px;display:none}
+.sres .sum{font-size:12px;color:var(--ink-3);padding:8px 10px 4px}
+.hit{width:100%;display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;padding:10px;border-radius:var(--r-md);text-align:left}
+.hit:hover{background:var(--bg)}
+.hit[aria-current]{background:var(--teal-50);box-shadow:inset 0 0 0 1px var(--teal-100)}
+.hit .top{display:flex;align-items:center;gap:6px;min-width:0;font-size:12.5px}
+.hit .top b{font-weight:700;white-space:nowrap}
+.hit .top .room-n{color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.hit .top time{margin-left:auto;font-size:11.5px;color:var(--ink-3);white-space:nowrap;flex:none}
+.hit p{margin:3px 0 0;font-size:13px;line-height:1.5;color:var(--ink-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hit mark,.sres mark{background:var(--hl);color:var(--ink);border-radius:3px;padding:0 1px}
+.more{display:block;margin:6px auto 4px;height:34px;padding:0 16px;border-radius:17px;background:var(--bg);font-size:12.5px;font-weight:700;color:var(--ink-2)}
+.more:hover{background:var(--line)}
+.empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;padding:40px 24px;color:var(--ink-3);font-size:12.5px}
+.empty img{width:88px;mix-blend-mode:multiply;margin-bottom:6px}
+.empty b{font-size:14px;color:var(--ink)}
+
+/* 검색 결과로 연 메시지 */
+.msg.jump .bubble{box-shadow:0 0 0 3px var(--sun-500),var(--shadow-1)}
+mark{background:none;color:inherit}
+body[data-s=search] mark.k1,
+body[data-s=insearch] mark.k2{background:var(--hl);color:var(--ink);border-radius:3px;padding:0 1px}
+body[data-s=insearch] mark.k2.cur{background:var(--sun-500);color:#fff}
+
+/* ───────── A2: 이 대화방에서 검색 ───────── */
+.in-search{display:none;align-items:center;gap:8px;padding:8px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:2}
+.in-search .search{margin:0;flex:1;height:36px;background:#fff;border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100)}
+.in-search .cnt{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap;font-variant-numeric:tabular-nums;min-width:52px;text-align:center}
+.in-search .icon-btn{width:32px;height:32px}
+

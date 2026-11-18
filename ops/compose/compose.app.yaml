@@ -119,6 +119,10 @@ services:
       # 이미지 자체 자동 백업(매일 pg_dump를 zulip 볼륨 /data/backups에 쌓고 지우지 않음)을 끄고
       # ops/backup.sh(보관 일수·로그·볼륨 밖 저장)로 일원화한다.
       AUTO_BACKUP_ENABLED: "False"
+      # 2단계 A2 한국어 검색: 기본 전문 검색은 단어 단위라 "회의자료"로 "회의자료를"을 못 찾는다.
+      # PGroonga는 단어 안쪽 일부도 찾는다. 확장은 [DB]의 zulip/zulip-postgresql:14 이미지가 DB를 처음 만들 때 설치한다.
+      # 처음 켜고 시작할 때 pgroonga 마이그레이션이 기존 메시지 전체의 검색 열을 채운다(ops/README.md "2단계").
+      SETTING_USING_PGROONGA: "True"
 
       # --- M6: 폐쇄망 외부 접속 끄기 (근거·출처: ops/README.md) ---
       # docker-zulip 12.3 entrypoint: "True"/"False"/"None"은 파이썬 값으로, 빈 값은 무시된다.
