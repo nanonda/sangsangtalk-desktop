@@ -1,5 +1,6 @@
 {
   "name": "sangsangtalk-web",
+  "version": "0.1.0",
   "private": true,
   "description": "상상톡 messenger. Proxies the local Zulip API so the browser never calls Zulip directly.",
   "scripts": {

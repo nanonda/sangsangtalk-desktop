@@ -6,14 +6,17 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{
-    AppHandle, Manager, Webview, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Manager, UserAttentionType, Webview, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use url::Url;
 
 /// App address, fixed at build time from SANGSANGTALK_APP_URL (validated by build.rs;
@@ -61,16 +64,27 @@ struct Shell {
     link: Mutex<Option<LinkState>>,
     misses: AtomicU8,
     unread: AtomicU32,
-    /// Recent `notify` calls, for the rate limit.
+    /// Recent ordinary `notify` toasts, for the rate limit.
     notify_log: Mutex<VecDeque<Instant>>,
+    /// Recent urgent toasts, limited separately.
+    urgent_log: Mutex<VecDeque<Instant>>,
+    /// An urgent (until-focused) taskbar flash is running; cleared when the window gets focus.
+    urgent_flash: AtomicBool,
     /// Download destinations in progress, so two downloads never pick the same name.
     downloads: Mutex<HashMap<PathBuf, Url>>,
+    /// Per-device PC app settings (close action, hotkey) as saved on disk.
+    settings: Mutex<DesktopSettings>,
+    /// Whether the saved hotkey is actually registered in this run.
+    hotkey_active: AtomicBool,
 }
 
 const NOTIFY_TITLE_MAX: usize = 60;
 const NOTIFY_BODY_MAX: usize = 200;
 const NOTIFY_TARGET_MAX: usize = 64;
 const NOTIFY_PER_SECOND: usize = 3;
+const NOTIFY_WINDOW: Duration = Duration::from_secs(1);
+const URGENT_PER_WINDOW: usize = 5;
+const URGENT_WINDOW: Duration = Duration::from_secs(10);
 const UNREAD_MAX: u32 = 999_999;
 
 pub fn run() {
@@ -81,11 +95,31 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(on_second_instance));
     }
     builder
-        .invoke_handler(tauri::generate_handler![notify, set_unread])
+        .invoke_handler(tauri::generate_handler![
+            notify,
+            set_unread,
+            app_info,
+            get_autostart,
+            set_autostart,
+            get_close_action,
+            set_close_action,
+            get_hotkey,
+            set_hotkey
+        ])
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
+        // Only Rust registers shortcuts; the page gets no global-shortcut permission.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        on_hotkey(app);
+                    }
+                })
+                .build(),
+        )
         .register_uri_scheme_protocol("sangsang", |_ctx, request| {
             if request.uri().path() == "/offline" {
                 tauri::http::Response::builder()
@@ -132,11 +166,32 @@ pub fn run() {
 
             let watched = window.clone();
             window.on_window_event(move |event| {
+                if let WindowEvent::Focused(true) = event {
+                    // Windows stops the until-foreground flash itself; just forget it.
+                    watched
+                        .state::<Shell>()
+                        .urgent_flash
+                        .store(false, Ordering::SeqCst);
+                }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     let shell = watched.state::<Shell>();
-                    if !shell.quitting.load(Ordering::SeqCst) {
-                        api.prevent_close();
-                        let _ = watched.hide();
+                    if shell.quitting.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    api.prevent_close();
+                    let close_action = shell
+                        .settings
+                        .lock()
+                        .map(|settings| settings.close_action)
+                        .unwrap_or_default();
+                    match close_action {
+                        CloseAction::Tray => {
+                            let _ = watched.hide();
+                        }
+                        CloseAction::Quit => {
+                            shell.quitting.store(true, Ordering::SeqCst);
+                            watched.app_handle().exit(0);
+                        }
                     }
                 }
             });
@@ -147,10 +202,18 @@ pub fn run() {
                 misses: AtomicU8::new(0),
                 unread: AtomicU32::new(0),
                 notify_log: Mutex::new(VecDeque::new()),
+                urgent_log: Mutex::new(VecDeque::new()),
+                urgent_flash: AtomicBool::new(false),
                 downloads: Mutex::new(HashMap::new()),
+                settings: Mutex::new(load_settings(app.handle())),
+                hotkey_active: AtomicBool::new(false),
+            });
+            app.manage(TrayItems {
+                autostart: autostart.clone(),
             });
             #[cfg(windows)]
             app.manage(toast::Shown::default());
+            register_saved_hotkey(app.handle());
 
             TrayIconBuilder::with_id("tray")
                 .icon(icon_for(LinkState::SignedOut))
@@ -501,6 +564,8 @@ fn png_icon(bytes: &[u8]) -> Image<'static> {
 // Granted to APP_URL by the web-bridge capability that build.rs generates; each command
 // also re-checks the calling webview's URL.
 
+/// `sound`, `flash` and `urgent` are optional so older pages keep working.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn notify(
     app: AppHandle,
@@ -508,8 +573,15 @@ fn notify(
     title: String,
     body: String,
     target: String,
+    sound: Option<String>,
+    flash: Option<bool>,
+    urgent: Option<bool>,
 ) -> Result<(), String> {
     require_app_caller(&webview)?;
+    let style = ToastStyle {
+        sound: NotifySound::parse(sound.as_deref()),
+        urgent: urgent.unwrap_or(false),
+    };
     let title = clean_text(&title, NOTIFY_TITLE_MAX, "제목")?;
     if title.is_empty() {
         return Err("알림 제목이 비어 있습니다.".into());
@@ -522,12 +594,57 @@ fn notify(
     } else {
         return Err("알림 이동 경로가 올바르지 않습니다.".into());
     };
-    if !notify_allowed(&app.state::<Shell>().notify_log, Instant::now()) {
-        // Over the rate limit: drop quietly so a chatty page cannot flood the desktop.
-        return Ok(());
+    // Urgent messages always flash; only the toast itself is rate limited.
+    if flash.unwrap_or(true) || style.urgent {
+        flash_taskbar(&app, style.urgent);
     }
-    show_toast(&app, title, body, click);
+    // Over the limit: drop quietly so a chatty page cannot flood the desktop. Urgent
+    // toasts have their own, separate budget so ordinary ones cannot crowd them out.
+    let shell = app.state::<Shell>();
+    let allowed = if style.urgent {
+        notify_allowed(
+            &shell.urgent_log,
+            Instant::now(),
+            URGENT_PER_WINDOW,
+            URGENT_WINDOW,
+        )
+    } else {
+        notify_allowed(
+            &shell.notify_log,
+            Instant::now(),
+            NOTIFY_PER_SECOND,
+            NOTIFY_WINDOW,
+        )
+    };
+    if allowed {
+        show_toast(&app, title, body, click, style);
+    }
     Ok(())
+}
+
+/// Flashes the taskbar button when the window is not in front: a few times normally,
+/// and until the window comes forward for urgent messages. While an urgent flash is
+/// running, ordinary notifications leave it alone (a short flash would cancel it).
+fn flash_taskbar(app: &AppHandle, urgent: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let in_front = window.is_visible().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(false)
+        && window.is_focused().unwrap_or(false);
+    if in_front {
+        return;
+    }
+    let urgent_flash = &app.state::<Shell>().urgent_flash;
+    let kind = if urgent {
+        urgent_flash.store(true, Ordering::SeqCst);
+        UserAttentionType::Critical
+    } else if urgent_flash.load(Ordering::SeqCst) {
+        return;
+    } else {
+        UserAttentionType::Informational
+    };
+    let _ = window.request_user_attention(Some(kind));
 }
 
 #[tauri::command]
@@ -547,18 +664,23 @@ fn require_app_caller(webview: &Webview) -> Result<(), String> {
     }
 }
 
-/// At most NOTIFY_PER_SECOND calls in any one-second window.
-fn notify_allowed(log: &Mutex<VecDeque<Instant>>, now: Instant) -> bool {
+/// At most `limit` calls in any `window`-long period.
+fn notify_allowed(
+    log: &Mutex<VecDeque<Instant>>,
+    now: Instant,
+    limit: usize,
+    window: Duration,
+) -> bool {
     let Ok(mut log) = log.lock() else {
         return false;
     };
     while log
         .front()
-        .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(1))
+        .is_some_and(|at| now.duration_since(*at) >= window)
     {
         log.pop_front();
     }
-    if log.len() >= NOTIFY_PER_SECOND {
+    if log.len() >= limit {
         return false;
     }
     log.push_back(now);
@@ -740,16 +862,73 @@ enum ToastClick {
     Reveal(PathBuf),
 }
 
+/// N2 notification sounds (Windows system sounds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum NotifySound {
+    #[default]
+    Default,
+    Im,
+    Mail,
+    Reminder,
+    None,
+}
+
+impl NotifySound {
+    /// Missing or unknown names mean `default`, so newer pages keep working with this shell.
+    fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("im") => Self::Im,
+            Some("mail") => Self::Mail,
+            Some("reminder") => Self::Reminder,
+            Some("none") => Self::None,
+            _ => Self::Default,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ToastStyle {
+    sound: NotifySound,
+    /// N7: stays until dismissed (`scenario="reminder"`) and always rings the reminder sound.
+    urgent: bool,
+}
+
+impl ToastStyle {
+    /// The `<audio src>` to use, or `None` for the system default sound (or silence).
+    fn audio_src(&self) -> Option<&'static str> {
+        if self.urgent {
+            return Some("ms-winsoundevent:Notification.Reminder");
+        }
+        match self.sound {
+            NotifySound::Default | NotifySound::None => None,
+            NotifySound::Im => Some("ms-winsoundevent:Notification.IM"),
+            NotifySound::Mail => Some("ms-winsoundevent:Notification.Mail"),
+            NotifySound::Reminder => Some("ms-winsoundevent:Notification.Reminder"),
+        }
+    }
+
+    fn silent(&self) -> bool {
+        !self.urgent && self.sound == NotifySound::None
+    }
+}
+
 #[cfg(windows)]
-fn show_toast(app: &AppHandle, title: String, body: String, click: ToastClick) {
+fn show_toast(app: &AppHandle, title: String, body: String, click: ToastClick, style: ToastStyle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        let _ = toast::show(&app, &title, &body, click);
+        let _ = toast::show(&app, &title, &body, click, style);
     });
 }
 
 #[cfg(not(windows))]
-fn show_toast(_app: &AppHandle, _title: String, _body: String, _click: ToastClick) {}
+fn show_toast(
+    _app: &AppHandle,
+    _title: String,
+    _body: String,
+    _click: ToastClick,
+    _style: ToastStyle,
+) {
+}
 
 /// Builds the toast with WinRT directly so the app owns the `ToastNotification`.
 /// Each shown toast is kept in `Shown` until it is clicked, closed by the user or
@@ -770,7 +949,7 @@ mod toast {
         ToastNotificationManager,
     };
 
-    use super::{on_toast_click, ToastClick};
+    use super::{on_toast_click, ToastClick, ToastStyle};
 
     /// The PowerShell AppUserModelID, used by dev builds (no Start menu shortcut).
     const POWERSHELL_APP_ID: &str =
@@ -803,7 +982,13 @@ mod toast {
         }
     }
 
-    pub fn show(app: &AppHandle, title: &str, body: &str, click: ToastClick) -> Result<()> {
+    pub fn show(
+        app: &AppHandle,
+        title: &str,
+        body: &str,
+        click: ToastClick,
+        style: ToastStyle,
+    ) -> Result<()> {
         // Installed builds: the NSIS shortcut carries the bundle identifier as its
         // AppUserModelID. Dev builds borrow the PowerShell id, as tauri-plugin-notification does.
         let app_id = if tauri::is_dev() {
@@ -834,6 +1019,36 @@ mod toast {
         }
         visual.AppendChild(&binding)?;
         toast_el.AppendChild(&visual)?;
+
+        if style.urgent {
+            // Windows only honours the reminder scenario when the toast has a button.
+            toast_el.SetAttribute(h!("scenario"), h!("reminder"))?;
+            let actions = xml.CreateElement(h!("actions"))?;
+            let open = xml.CreateElement(h!("action"))?;
+            open.SetAttribute(h!("content"), h!("열기"))?;
+            // The route rides along like `launch`, for a click that starts the app.
+            let open_arguments = match &click {
+                ToastClick::Open(target) => HSTRING::from(target.as_str()),
+                _ => HSTRING::from("open"),
+            };
+            open.SetAttribute(h!("arguments"), &open_arguments)?;
+            actions.AppendChild(&open)?;
+            let close = xml.CreateElement(h!("action"))?;
+            close.SetAttribute(h!("content"), h!("닫기"))?;
+            close.SetAttribute(h!("arguments"), h!("dismiss"))?;
+            close.SetAttribute(h!("activationType"), h!("system"))?;
+            actions.AppendChild(&close)?;
+            toast_el.AppendChild(&actions)?;
+        }
+        if let Some(src) = style.audio_src() {
+            let audio = xml.CreateElement(h!("audio"))?;
+            audio.SetAttribute(h!("src"), &HSTRING::from(src))?;
+            toast_el.AppendChild(&audio)?;
+        } else if style.silent() {
+            let audio = xml.CreateElement(h!("audio"))?;
+            audio.SetAttribute(h!("silent"), h!("true"))?;
+            toast_el.AppendChild(&audio)?;
+        }
         xml.AppendChild(&toast_el)?;
 
         let toast = ToastNotification::CreateToastNotification(&xml)?;
@@ -973,13 +1188,20 @@ fn handle_download(webview: Webview, event: DownloadEvent<'_>) -> bool {
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    show_toast(&app, "내려받기 완료".into(), name, ToastClick::Reveal(path));
+                    show_toast(
+                        &app,
+                        "내려받기 완료".into(),
+                        name,
+                        ToastClick::Reveal(path),
+                        ToastStyle::default(),
+                    );
                 }
                 _ => show_toast(
                     &app,
                     "내려받기 실패".into(),
                     "파일을 내려받지 못했습니다.".into(),
                     ToastClick::Focus,
+                    ToastStyle::default(),
                 ),
             }
             true
@@ -1011,4 +1233,436 @@ fn free_path(path: &Path, reserved: impl Fn(&Path) -> bool) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+// ---------------------------------------------------------------------------
+// PC app settings (P5): kept per device in `<app local data dir>\settings.json`.
+
+const DEFAULT_HOTKEY: &str = "Ctrl+Shift+Space";
+const HOTKEY_MAX: usize = 40;
+const SETTINGS_FILE: &str = "settings.json";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CloseAction {
+    /// Closing the window hides it to the tray (default).
+    #[default]
+    Tray,
+    /// Closing the window quits the app.
+    Quit,
+}
+
+impl CloseAction {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "tray" => Some(Self::Tray),
+            "quit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct HotkeySetting {
+    enabled: bool,
+    accelerator: String,
+}
+
+impl Default for HotkeySetting {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            accelerator: DEFAULT_HOTKEY.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DesktopSettings {
+    close_action: CloseAction,
+    hotkey: HotkeySetting,
+}
+
+impl DesktopSettings {
+    /// Unknown or broken files fall back to the defaults; a bad accelerator is reset.
+    fn from_json(text: &str) -> Self {
+        let mut settings: Self = serde_json::from_str(text).unwrap_or_default();
+        if parse_hotkey(&settings.hotkey.accelerator).is_err() {
+            settings.hotkey = HotkeySetting::default();
+        }
+        settings
+    }
+}
+
+fn settings_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join(SETTINGS_FILE))
+}
+
+fn load_settings(app: &AppHandle) -> DesktopSettings {
+    settings_path(app)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| DesktopSettings::from_json(&text))
+        .unwrap_or_default()
+}
+
+/// Writes a temporary file and renames it over the old one.
+fn save_settings(app: &AppHandle, settings: &DesktopSettings) -> Result<(), String> {
+    const FAILED: &str = "설정을 저장하지 못했습니다.";
+    let path = settings_path(app).ok_or(FAILED)?;
+    let dir = path.parent().ok_or(FAILED)?;
+    std::fs::create_dir_all(dir).map_err(|_| FAILED)?;
+    let text = serde_json::to_string_pretty(settings).map_err(|_| FAILED)?;
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, text).map_err(|_| FAILED)?;
+    std::fs::rename(&temp, &path).map_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+        FAILED.to_string()
+    })
+}
+
+fn current_settings(app: &AppHandle) -> DesktopSettings {
+    app.state::<Shell>()
+        .settings
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_default()
+}
+
+/// Parses an accelerator such as `Ctrl+Shift+Space`. It needs the Windows key or at
+/// least two of Ctrl/Alt/Shift, so everyday shortcuts (Ctrl+C, Ctrl+V, Ctrl+Z, Alt+F4,
+/// Shift+key, ...) cannot be taken over system-wide. A few well-known system
+/// combinations are refused outright.
+fn parse_hotkey(accelerator: &str) -> Result<Shortcut, String> {
+    let accelerator = accelerator.trim();
+    if accelerator.is_empty() || accelerator.len() > HOTKEY_MAX {
+        return Err("단축키 형식이 올바르지 않습니다.".into());
+    }
+    let shortcut: Shortcut = accelerator
+        .parse()
+        .map_err(|_| "단축키 형식이 올바르지 않습니다.".to_string())?;
+    let mods = shortcut.mods;
+    let plain_modifiers = [Modifiers::CONTROL, Modifiers::ALT, Modifiers::SHIFT]
+        .iter()
+        .filter(|modifier| mods.contains(**modifier))
+        .count();
+    if !mods.contains(Modifiers::SUPER) && plain_modifiers < 2 {
+        return Err(
+            "단축키에는 Ctrl·Alt·Shift 중 두 개 이상 또는 Windows 키가 들어가야 합니다.".into(),
+        );
+    }
+    let reserved = [
+        (Modifiers::CONTROL | Modifiers::SHIFT, Code::Escape),
+        (Modifiers::CONTROL | Modifiers::ALT, Code::Delete),
+    ];
+    if reserved
+        .iter()
+        .any(|(reserved_mods, key)| mods == *reserved_mods && shortcut.key == *key)
+    {
+        return Err("Windows가 쓰는 단축키는 지정할 수 없습니다.".into());
+    }
+    Ok(shortcut)
+}
+
+/// The global hotkey brings the window forward, or hides it when it is already in front.
+fn on_hotkey(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let in_front = window.is_visible().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(false)
+        && window.is_focused().unwrap_or(false);
+    if in_front {
+        let _ = window.hide();
+    } else {
+        open_from_tray(app);
+    }
+}
+
+/// At startup: registers the saved hotkey. If another program holds it, it stays
+/// inactive for this run only (`hotkey_active` false); the saved setting is untouched, so
+/// it is retried next start and is never written back as "off".
+fn register_saved_hotkey(app: &AppHandle) {
+    let hotkey = current_settings(app).hotkey;
+    let registered = hotkey.enabled
+        && parse_hotkey(&hotkey.accelerator)
+            .ok()
+            .is_some_and(|shortcut| app.global_shortcut().register(shortcut).is_ok());
+    app.state::<Shell>()
+        .hotkey_active
+        .store(registered, Ordering::SeqCst);
+}
+
+/// `get_hotkey`/`set_hotkey` reply: the saved setting plus whether it is live right now.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HotkeyState {
+    enabled: bool,
+    accelerator: String,
+    /// True when the hotkey is registered in this run. `enabled && !active` means another
+    /// program held it at startup.
+    active: bool,
+}
+
+fn hotkey_state(app: &AppHandle) -> HotkeyState {
+    let hotkey = current_settings(app).hotkey;
+    HotkeyState {
+        enabled: hotkey.enabled,
+        accelerator: hotkey.accelerator,
+        active: app.state::<Shell>().hotkey_active.load(Ordering::SeqCst),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P5 bridge commands. Like `notify`, each checks that the caller is the app page.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfo {
+    version: String,
+    capture_block: bool,
+}
+
+#[tauri::command]
+fn app_info(app: AppHandle, webview: Webview) -> Result<AppInfo, String> {
+    require_app_caller(&webview)?;
+    Ok(AppInfo {
+        version: app.package_info().version.to_string(),
+        capture_block: CAPTURE_BLOCK,
+    })
+}
+
+#[tauri::command]
+fn get_autostart(app: AppHandle, webview: Webview) -> Result<bool, String> {
+    require_app_caller(&webview)?;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|_| "시작 시 실행 상태를 확인하지 못했습니다.".to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, webview: Webview, enabled: bool) -> Result<bool, String> {
+    require_app_caller(&webview)?;
+    let changed = if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    let actual = app.autolaunch().is_enabled().unwrap_or(false);
+    sync_autostart_item(&app, actual);
+    match changed {
+        Ok(()) => Ok(actual),
+        Err(_) => Err("시작 시 실행 설정을 바꾸지 못했습니다.".into()),
+    }
+}
+
+#[tauri::command]
+fn get_close_action(app: AppHandle, webview: Webview) -> Result<CloseAction, String> {
+    require_app_caller(&webview)?;
+    Ok(current_settings(&app).close_action)
+}
+
+#[tauri::command]
+fn set_close_action(
+    app: AppHandle,
+    webview: Webview,
+    action: String,
+) -> Result<CloseAction, String> {
+    require_app_caller(&webview)?;
+    let action = CloseAction::parse(&action)
+        .ok_or_else(|| "창 닫기 동작 값이 올바르지 않습니다.".to_string())?;
+    let updated = {
+        let shell = app.state::<Shell>();
+        let mut settings = shell
+            .settings
+            .lock()
+            .map_err(|_| "설정을 바꾸지 못했습니다.")?;
+        settings.close_action = action;
+        settings.clone()
+    };
+    save_settings(&app, &updated)?;
+    Ok(action)
+}
+
+#[tauri::command]
+fn get_hotkey(app: AppHandle, webview: Webview) -> Result<HotkeyState, String> {
+    require_app_caller(&webview)?;
+    Ok(hotkey_state(&app))
+}
+
+/// `accelerator` may be omitted to keep the current one. If registering or saving fails,
+/// the previous registration and in-memory setting are restored.
+#[tauri::command]
+fn set_hotkey(
+    app: AppHandle,
+    webview: Webview,
+    enabled: bool,
+    accelerator: Option<String>,
+) -> Result<HotkeyState, String> {
+    require_app_caller(&webview)?;
+    let shell = app.state::<Shell>();
+    let previous_settings = current_settings(&app);
+    let previous = previous_settings.hotkey.clone();
+    let was_active = shell.hotkey_active.load(Ordering::SeqCst);
+    let accelerator = accelerator
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| previous.accelerator.clone());
+    let shortcut = parse_hotkey(&accelerator)?;
+
+    let shortcuts = app.global_shortcut();
+    // Only a registration that actually happened in this run is undone or restored.
+    let previous_shortcut = parse_hotkey(&previous.accelerator)
+        .ok()
+        .filter(|_| was_active);
+    let restore_previous = || {
+        if let Some(old) = previous_shortcut {
+            let _ = shortcuts.register(old);
+        }
+        shell.hotkey_active.store(was_active, Ordering::SeqCst);
+    };
+    if let Some(old) = previous_shortcut {
+        let _ = shortcuts.unregister(old);
+    }
+    shell.hotkey_active.store(false, Ordering::SeqCst);
+    if enabled {
+        if shortcuts.register(shortcut).is_err() {
+            restore_previous();
+            return Err("다른 프로그램이 쓰는 단축키입니다.".into());
+        }
+        shell.hotkey_active.store(true, Ordering::SeqCst);
+    }
+
+    let updated = {
+        let mut settings = shell
+            .settings
+            .lock()
+            .map_err(|_| "설정을 바꾸지 못했습니다.")?;
+        settings.hotkey = HotkeySetting {
+            enabled,
+            accelerator,
+        };
+        settings.clone()
+    };
+    if let Err(error) = save_settings(&app, &updated) {
+        if enabled {
+            let _ = shortcuts.unregister(shortcut);
+        }
+        restore_previous();
+        if let Ok(mut settings) = shell.settings.lock() {
+            *settings = previous_settings;
+        }
+        return Err(error);
+    }
+    Ok(hotkey_state(&app))
+}
+
+/// Keeps the tray "시작 시 실행" check mark in step with the real registration.
+fn sync_autostart_item(app: &AppHandle, enabled: bool) {
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let _ = items.autostart.set_checked(enabled);
+    }
+}
+
+struct TrayItems {
+    autostart: CheckMenuItem<tauri::Wry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targets() {
+        assert!(valid_target("#/dm/5"));
+        assert!(valid_target("#/group/12"));
+        assert!(!valid_target("#dm"));
+        assert!(!valid_target("javascript:alert(1)"));
+        assert!(!valid_target("#/dm/5?x=1"));
+        assert!(!valid_target(&format!("#/{}", "a".repeat(80))));
+    }
+
+    #[test]
+    fn notification_text() {
+        assert_eq!(
+            clean_text(" a\u{200B}b\u{202E}c\n ", 10, "본문").unwrap(),
+            "abc"
+        );
+        assert!(clean_text(&"가".repeat(61), 60, "제목").is_err());
+    }
+
+    #[test]
+    fn notify_rate_limit() {
+        let log = Mutex::new(VecDeque::new());
+        let start = Instant::now();
+        let allowed = |at| notify_allowed(&log, at, NOTIFY_PER_SECOND, NOTIFY_WINDOW);
+        assert!((0..3).all(|_| allowed(start)));
+        assert!(!allowed(start));
+        assert!(allowed(start + Duration::from_secs(1)));
+
+        // Urgent toasts use their own log and budget.
+        let urgent_log = Mutex::new(VecDeque::new());
+        let urgent = |at| notify_allowed(&urgent_log, at, URGENT_PER_WINDOW, URGENT_WINDOW);
+        assert!((0..URGENT_PER_WINDOW).all(|_| urgent(start)));
+        assert!(!urgent(start + Duration::from_secs(9)));
+        assert!(urgent(start + URGENT_WINDOW));
+    }
+
+    #[test]
+    fn sounds() {
+        assert_eq!(NotifySound::parse(None), NotifySound::Default);
+        assert_eq!(NotifySound::parse(Some("im")), NotifySound::Im);
+        assert_eq!(NotifySound::parse(Some("none")), NotifySound::None);
+        // Unknown names fall back to the default sound instead of failing the call.
+        assert_eq!(NotifySound::parse(Some("beep")), NotifySound::Default);
+        // Urgent always rings the reminder sound, even when muted.
+        let urgent = ToastStyle {
+            sound: NotifySound::None,
+            urgent: true,
+        };
+        assert_eq!(
+            urgent.audio_src(),
+            Some("ms-winsoundevent:Notification.Reminder")
+        );
+        assert_eq!(ToastStyle::default().audio_src(), None);
+    }
+
+    #[test]
+    fn hotkeys() {
+        assert!(parse_hotkey(DEFAULT_HOTKEY).is_ok());
+        assert!(parse_hotkey("Ctrl+Alt+K").is_ok());
+        assert!(parse_hotkey("Super+K").is_ok());
+        assert!(parse_hotkey("Space").is_err());
+        assert!(parse_hotkey("Shift+A").is_err());
+        // Single-modifier everyday shortcuts are refused.
+        for taken in ["Ctrl+C", "Ctrl+V", "Ctrl+Z", "Alt+F4", "Alt+F9"] {
+            assert!(parse_hotkey(taken).is_err(), "{taken}");
+        }
+        assert!(parse_hotkey("Ctrl+Shift+Escape").is_err());
+        assert!(parse_hotkey("Ctrl+Alt+Delete").is_err());
+        assert!(parse_hotkey("Ctrl+Nope").is_err());
+        assert!(parse_hotkey("").is_err());
+    }
+
+    #[test]
+    fn settings_file() {
+        assert_eq!(
+            DesktopSettings::from_json("not json"),
+            DesktopSettings::default()
+        );
+        let saved = DesktopSettings::from_json(
+            r#"{"closeAction":"quit","hotkey":{"enabled":true,"accelerator":"Ctrl+Alt+K"}}"#,
+        );
+        assert_eq!(saved.close_action, CloseAction::Quit);
+        assert!(saved.hotkey.enabled);
+        let broken =
+            DesktopSettings::from_json(r#"{"hotkey":{"enabled":true,"accelerator":"Space"}}"#);
+        assert_eq!(broken.hotkey, HotkeySetting::default());
+        assert_eq!(CloseAction::parse("tray"), Some(CloseAction::Tray));
+        assert_eq!(CloseAction::parse("hide"), None);
+    }
 }

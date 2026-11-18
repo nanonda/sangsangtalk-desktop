@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light" data-font="normal" data-density="comfortable">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상상톡 시안 v4 알림·설정</title>
+<!-- v4(3단계): 설정 모달(S1·N1~N5·P1~P5), 알림 센터·종 아이콘(N6·N3), 중요 메시지(N7), 공지 확인(N8), 어두운 테마·글자·밀도(P2). 관리자 정책 탭(D1)은 admin.html#policy. -->
+<link rel="stylesheet" href="base-v2.css">
+<link rel="stylesheet" href="base-v3.css">
+<link rel="stylesheet" href="base-v4.css">
+<style>
+/* 시안 전용: 화면 전환 */
+body[data-s^=set] #settings{display:grid}
+body[data-s=snooze] .snooze-menu{display:block}
+body[data-s^=center] .ncenter{display:flex}
+body[data-s^=sendmenu] .send-menu{display:block}
+body[data-s=urgenttoast] .wtoast{display:block}
+body[data-s=noticeset] #noticeDlg{display:grid}
+body[data-s=acklist] #ackPop{display:block}
+.switcher .grp{display:flex;gap:2px;padding-left:6px;margin-left:4px;border-left:1px solid rgba(255,255,255,.18)}
+</style>
+</head>
+<body data-s="base">
+<div class="frame">
+  <nav class="rail" aria-label="주 메뉴">
+    <img class="emblem" src="assets/emblem.png" alt="음성군">
+    <button class="rail-btn" aria-current="page"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M8.5 9h7M8.5 12h4.5"/></svg>대화<span class="badge">3</span></button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg>직원</button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/></svg>쪽지</button>
+    <button class="rail-btn"><svg class="i" viewBox="0 0 24 24"><path d="m12 3.8 2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8Z"/></svg>별표</button>
+    <div class="rail-spacer"></div>
+    <!-- N6·N3: 종 아이콘. 누르면 알림 센터, 우클릭·길게 누르면 잠시 끄기 메뉴 -->
+    <button class="rail-btn" id="bell" data-go="center" aria-haspopup="dialog" aria-label="알림 4개 안 봄" title="알림 · 우클릭하면 잠시 끄기">
+      <svg class="i on-ic" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>
+      <svg class="i off-ic" viewBox="0 0 24 24" hidden><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 3.5l16 17"/></svg>
+      <span class="lbl">알림</span><span class="badge">4</span><span class="snz" hidden>58분</span>
+    </button>
+    <button class="rail-btn" data-go="set-notify"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.4A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z"/></svg>설정</button>
+    <div class="me" title="박지민 · 사용 중"><img src="assets/turtle-front.png" alt="내 프로필"><span class="dot" aria-hidden="true"></span></div>
+    <span class="me-label">사용 중</span>
+  </nav>
+
+  <!-- N3: 잠시 끄기 메뉴 (종 우클릭) -->
+  <div class="menu compact snooze-menu" role="menu" aria-label="알림 잠시 끄기">
+    <div class="hd">알림 잠시 끄기</div>
+    <button role="menuitem" data-go="snoozed">1시간<small>오후 3:20까지</small></button>
+    <button role="menuitem" data-go="snoozed">3시간<small>오후 5:20까지</small></button>
+    <button role="menuitem" data-go="snoozed">오늘 하루<small>오후 11:59까지</small></button>
+    <button role="menuitem" data-go="set-notify">직접 입력…</button>
+    <hr>
+    <div class="hd" style="font-weight:500;line-height:1.5;word-break:keep-all">끈 동안에도 중요 메시지는 알립니다.</div>
+  </div>
+
+  <section class="list" aria-label="대화 목록">
+    <header class="list-head">
+      <div class="brand"><b>상상톡</b></div>
+      <button class="new-btn"><span class="plus" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M6 2v8M2 6h8"/></svg></span>새 대화<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
+    </header>
+    <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg><input type="search" placeholder="대화방, 이름, 메시지 검색"></label>
+    <div class="chips"><button class="chip" aria-pressed="true">전체</button><button class="chip" aria-pressed="false">안읽음<span class="n">3</span></button><button class="chip" aria-pressed="false">그룹</button><button class="chip" aria-pressed="false">1:1</button></div>
+    <div class="rooms">
+      <div class="sec">내 부서</div>
+      <button class="room">
+        <span class="av dept"><svg class="i" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></svg></span>
+        <span><span class="t"><b>홍보실</b><span class="num">5</span><span class="tag-dept">부서</span></span><p>공지: 축제 당일 근무표 확인 부탁합니다</p></span>
+        <span class="meta"><time>오전 9:05</time><span class="badge">1</span></span>
+      </button>
+      <div class="sec">그룹 <span class="cnt">2</span></div>
+      <button class="room" aria-current="true">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>홍보 협업방</b><span class="num">6</span></span><p><span class="urg-tag">중요</span>이서준: 군수님 현장 방문이 2시로…</p></span>
+        <span class="meta"><time>오전 11:02</time><span class="badge">2</span></span>
+      </button>
+      <button class="room">
+        <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+        <span><span class="t"><b>총무팀 협업</b><span class="num">4</span><svg class="i mute" viewBox="0 0 24 24" aria-label="알림 꺼짐"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 3.5l16 17"/></svg></span><p>정하람: 내년 홍보 예산 요구서 초안 공유드립니다</p></span>
+        <span class="meta"><time>오전 8:52</time></span>
+      </button>
+      <div class="sec">1:1</div>
+      <button class="room">
+        <span class="av c3">유나<span class="dot idle"></span></span>
+        <span><span class="t"><b>최유나</b><em>주무관 · 홍보실</em></span><p>나: 보도자료 초안 올렸습니다</p></span>
+        <span class="meta"><time>오전 8:30</time></span>
+      </button>
+    </div>
+  </section>
+
+  <main class="chat" aria-label="대화">
+    <header class="chat-head">
+      <span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span>
+      <div><h1>홍보 협업방 <span class="count-chip"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/></svg>6</span></h1><p>김도윤, 강예린, 이서준, 최유나, 정하람, 나</p></div>
+    </header>
+
+    <!-- N8: 확인 요청 공지. 받는 사람은 "확인", 등록한 사람(과 관리자)은 "확인 N/M명" -->
+    <section class="notice-bar" id="noticeBar" aria-label="공지">
+      <div class="nb-row">
+        <span class="nb-ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 10v4a1 1 0 0 0 1 1h2l6 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16.5 9a4 4 0 0 1 0 6"/></svg></span>
+        <span class="lbl">공지</span><span class="ack-tag">확인 요청</span>
+        <button class="txt">축제 당일(11/22) 부스 근무표 확인하고 확인 버튼 눌러 주세요. 바꿀 사람은 금요일까지 말씀해 주세요.</button>
+        <button class="ack-btn n8-recv" data-go="acked">확인</button>
+        <span class="acked n8-done"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>확인함</span>
+        <button class="ack-count n8-mine" data-go="acklist" aria-haspopup="dialog" id="ackCount">확인 <b>3</b>/5명<svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button class="icon-btn" aria-label="공지 펼치기"><svg class="i chev-ic" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button class="icon-btn" aria-label="공지 닫기(내 화면에서만)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <!-- 확인 현황 (등록한 사람·관리자만) -->
+      <div class="readers ack-pop" role="dialog" aria-label="공지 확인 현황" id="ackPop">
+        <h3>공지 확인 현황<button class="icon-btn" aria-label="닫기" data-go="ackmine"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></h3>
+        <div class="seg" role="tablist"><button role="tab" aria-selected="true">확인<span class="n">3</span></button><button role="tab" aria-selected="false">미확인<span class="n">2</span></button></div>
+        <div class="plist">
+          <div class="pl"><span class="av xs c5">예린</span><span><b>강예린</b><em>주무관</em></span><em>오전 9:12</em></div>
+          <div class="pl"><span class="av xs c3">유나</span><span><b>최유나</b><em>주무관</em></span><em>오전 9:40</em></div>
+          <div class="pl"><span class="av xs c6">하람</span><span><b>정하람</b><em>주무관</em></span><em>오전 10:03</em></div>
+        </div>
+        <div class="plist" hidden>
+          <div class="pl"><span class="av xs c2">서준</span><span><b>이서준</b><em>주무관</em></span><span class="pend">미확인</span></div>
+          <div class="pl"><span class="av xs c1">도윤</span><span><b>김도윤</b><em>홍보실장</em></span><span class="pend">미확인</span></div>
+        </div>
+        <div class="foot">등록할 때 대화방 인원 기준(나 제외). 공지를 해제해도 확인 기록은 감사 로그에 남습니다.</div>
+      </div>
+    </section>
+
+    <div class="log" id="log" role="log" aria-label="메시지">
+      <div class="day"><span>2026년 11월 18일 수요일</span></div>
+
+      <div class="msg">
+        <span class="av sm c1">도윤</span>
+        <div class="body">
+          <span class="who">김도윤<small>홍보실장</small></span>
+          <div class="row"><div class="bubble">축제 홍보물 2차 시안 오늘 오후에 공유하겠습니다.</div><span class="stamp"><time>오전 10:12</time></span></div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <span class="av sm c5">예린</span>
+        <div class="body">
+          <span class="who">강예린<small>주무관</small><span class="for-me">나를 멘션</span></span>
+          <!-- N4: 키워드("예산")는 연보라 밑줄형 강조. 멘션 말풍선 위에서도 그대로 쓴다 -->
+          <div class="row"><div class="bubble mention"><span class="at me">@박지민</span> 현수막 문구 확인 부탁드려요. <mark class="kwh">예산</mark> 범위 안에서 3종으로 줄였습니다.</div><span class="stamp"><time>오전 10:41</time></span></div>
+        </div>
+      </div>
+
+      <!-- N7: 받은 중요 메시지 -->
+      <div class="msg">
+        <span class="av sm c2">서준</span>
+        <div class="body">
+          <span class="who">이서준<small>주무관</small></span>
+          <div class="row"><div class="bubble urgent"><span class="urg"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg>중요</span>군수님 현장 방문이 오후 3시에서 <b>2시</b>로 당겨졌습니다. 부스 담당자는 1시 30분까지 정문 앞으로 모여 주세요.</div><span class="stamp"><time>오전 11:02</time></span></div>
+        </div>
+      </div>
+
+      <!-- N7: 내가 보낸 중요 메시지 -->
+      <div class="msg mine">
+        <div class="body">
+          <div class="row"><div class="bubble urgent"><span class="urg"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg>중요</span>현수막 3종 오늘 오후 2시까지 업체에 넘겨야 합니다. 의견 있으면 1시 전에 주세요.</div><span class="stamp"><button class="unread" aria-label="안 읽은 사람 1명">1</button><time>오전 11:04</time></span></div>
+        </div>
+      </div>
+
+      <div class="msg mine">
+        <div class="body">
+          <div class="row"><div class="bubble">확인했습니다. 문구 수정해서 다시 올릴게요.</div><span class="stamp"><button class="unread" aria-label="안 읽은 사람 2명">2</button><time>오전 11:05</time></span></div>
+        </div>
+      </div>
+    </div>
+
+    <form class="composer" onsubmit="return false">
+      <!-- N7: 중요 메시지로 쓰는 중 -->
+      <div class="urgent-ctx n7-ctx"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg><div><b>중요 메시지로 보냅니다</b><span class="n7-ok">방해 금지·알림 끄기와 관계없이 소리와 함께 알립니다. 이번 1시간에 8번 더 보낼 수 있어요.</span><span class="n7-err">중요 메시지는 1시간에 10번까지 보낼 수 있습니다.</span></div><button type="button" class="icon-btn" aria-label="중요 메시지 취소" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+      <label class="sr-only" for="msg">메시지</label>
+      <textarea id="msg" rows="1" placeholder="홍보 협업방에 메시지 보내기"></textarea>
+      <div class="tools">
+        <button type="button" class="attach" aria-label="파일 첨부"><svg class="i" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>파일</button>
+        <button type="button" class="at-btn" aria-label="멘션">@</button>
+        <span class="hint">Enter 전송 · Shift+Enter 줄바꿈</span>
+        <span class="send-wrap">
+          <button class="send"><svg class="i" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M20 4 9.5 14.5M20 4l-6.5 16-4-5.5L4 10.5Z"/></svg>전송</button>
+          <button type="button" class="send-more" aria-label="보내기 옵션" aria-haspopup="menu" data-go="sendmenu" id="sendMore"><svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+          <span class="menu compact send-menu" role="menu" aria-label="보내기 옵션">
+            <button role="menuitem"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></svg>예약 보내기…</button>
+            <button role="menuitem"><svg class="i" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9"/></svg>예약한 메시지 보기</button>
+            <hr>
+            <button role="menuitem" class="urgent-item n7-can" data-go="urgentmode"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg><span>중요 메시지로 보내기<small>방해 금지 중에도 소리와 함께 알립니다</small></span></button>
+            <button role="menuitem" class="n7-cant" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg>중요 메시지로 보내기</button>
+            <div class="why n7-cant">전체 대화방의 중요 메시지는 관리자만 보낼 수 있습니다.</div>
+          </span>
+        </span>
+      </div>
+    </form>
+
+    <!-- N6: 알림 센터 서랍 -->
+    <aside class="ncenter" role="dialog" aria-labelledby="ncTitle">
+      <header>
+        <h2 id="ncTitle">알림 <span class="badge" id="ncCount">4</span></h2>
+        <button class="txt-btn" data-go="center-seen">모두 확인</button>
+        <button class="icon-btn" aria-label="알림 잠시 끄기" title="알림 잠시 끄기" data-go="snooze"><svg class="i" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 3.5l16 17"/></svg></button>
+        <button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </header>
+      <div class="stabs" role="tablist" aria-label="알림 종류">
+        <button role="tab" data-go="center" data-tab="all">전체<span class="n">4</span></button>
+        <button role="tab" data-go="center-mention" data-tab="mention">멘션<span class="n">1</span></button>
+        <button role="tab" data-go="center-reply" data-tab="reply">답장·반응<span class="n">1</span></button>
+        <button role="tab" data-go="center-notice" data-tab="notice">공지<span class="n">1</span></button>
+      </div>
+      <div class="nbody" id="nbody">
+        <div class="ngrp" data-k="all mention reply notice">오늘</div>
+        <button class="nitem unseen" data-k="mention">
+          <span class="av c5">예린<span class="kind mention">@</span></span>
+          <span><span class="nl"><b>강예린</b> 님이 나를 멘션했습니다</span><span class="nmeta"><span>홍보 협업방</span>·<time>오전 10:41</time></span>
+          <span class="nex mention">@박지민 현수막 문구 확인 부탁드려요. 예산 범위 안에서 3종으로 줄였습니다.</span></span>
+        </button>
+        <button class="nitem unseen" data-k="reply">
+          <span class="av c2">서준<span class="kind reply"><svg viewBox="0 0 12 12"><path d="M5 3 2 6l3 3M2.5 6H7a3 3 0 0 1 3 3v.5"/></svg></span></span>
+          <span><span class="nl"><b>이서준</b> 님이 내 글에 답장했습니다</span><span class="nmeta"><span>홍보 협업방</span>·<time>오전 10:20</time></span>
+          <span class="nex reply">부스 배치도는 제가 정리해서 오늘 안에 올릴게요.</span></span>
+        </button>
+        <button class="nitem unseen" data-k="notice">
+          <span class="av dept"><svg class="i" viewBox="0 0 24 24"><path d="M5 20V6.5L12 3l7 3.5V20M3 20h18"/><path d="M9 9h1M14 9h1M9 12.5h1M14 12.5h1M10.5 20v-3.5h3V20"/></svg><span class="kind notice"><svg viewBox="0 0 12 12"><path d="M2 5v2h1.5l3 2V3l-3 2Z"/></svg></span></span>
+          <span><span class="nl"><b>김도윤</b> 님이 공지를 등록했습니다<span class="ack-tag">확인 요청</span></span><span class="nmeta"><span>홍보실</span>·<time>오전 9:05</time></span>
+          <span class="nex notice">축제 당일 근무표 확인하고 공지의 확인 버튼을 눌러 주세요.</span></span>
+        </button>
+        <button class="nitem unseen" data-k="keyword">
+          <span class="av c6">하람<span class="kind keyword">#</span></span>
+          <span><span class="nl">키워드 <b>예산</b>이 들어간 메시지</span><span class="nmeta"><span>정하람 · 총무팀 협업</span>·<time>오전 8:52</time></span>
+          <span class="nex keyword">내년 홍보 예산 요구서 초안 공유드립니다. 금요일까지 의견 주세요.</span></span>
+        </button>
+        <button class="nitem" data-k="reply">
+          <span class="av c3">유나<span class="kind reaction">👍</span></span>
+          <span><span class="nl"><b>최유나</b> 님이 내 글에 반응을 남겼습니다</span><span class="nmeta"><span>최유나</span>·<time>오전 8:31</time></span>
+          <span class="nex reply">보도자료 초안 올렸습니다.</span></span>
+        </button>
+        <div class="ngrp" data-k="all mention reply">어제</div>
+        <button class="nitem" data-k="mention">
+          <span class="av c1">도윤<span class="kind mention">@</span></span>
+          <span><span class="nl"><b>김도윤</b> 님이 나를 멘션했습니다</span><span class="nmeta"><span>홍보실</span>·<time>오후 4:48</time></span>
+          <span class="nex mention">@박지민 내일 회의 자료 10부 출력 부탁해요.</span></span>
+        </button>
+        <button class="nitem" data-k="reply">
+          <span class="av c2">서준<span class="kind reply"><svg viewBox="0 0 12 12"><path d="M5 3 2 6l3 3M2.5 6H7a3 3 0 0 1 3 3v.5"/></svg></span></span>
+          <span><span class="nl"><b>이서준</b> 님이 내 글에 답장했습니다</span><span class="nmeta"><span>홍보 협업방</span>·<time>오후 2:10</time></span>
+          <span class="nex reply gone">회수된 메시지입니다</span></span>
+        </button>
+        <button class="more" data-k="all mention reply notice">이전 알림 더 보기</button>
+        <p class="nfoot" data-k="all mention reply notice">최근 30일 알림을 보여 줍니다.</p>
+        <div class="empty" id="ncEmpty" hidden><img src="assets/turtle-front.png" alt=""><b>새 알림이 없습니다</b><span>멘션, 내 글에 단 답장·반응, 공지가 여기에 모입니다.</span></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- N8: 공지로 등록 (확인 요청 체크) -->
+  <div class="scrim" id="noticeDlg">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="nsTitle" style="width:460px">
+      <header><div><h2 id="nsTitle">공지로 등록</h2><p>홍보 협업방 위쪽에 고정됩니다. 지금 공지는 바뀝니다.</p></div><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+      <div class="bd">
+        <div class="preview-line" style="font-size:13px;color:var(--ink-2);background:var(--bg);border-radius:10px;padding:10px 12px;line-height:1.55">축제 당일(11/22) 부스 근무표 확인하고 확인 버튼 눌러 주세요. 바꿀 사람은 금요일까지 말씀해 주세요.</div>
+        <label class="chk-card"><input type="checkbox" class="cb" checked><span><b>확인 요청</b><small>받는 사람에게 "확인" 버튼을 보여 주고, 누가 확인했는지 볼 수 있습니다. 알림 센터에도 들어갑니다.</small></span></label>
+      </div>
+      <footer><button class="btn ghost" data-go="base">취소</button><button class="btn primary" data-go="ackmine">등록</button></footer>
+    </div>
+  </div>
+
+  <!-- S1: 설정 모달 -->
+  <div class="scrim" id="settings">
+    <div class="dialog settings" role="dialog" aria-modal="true" aria-label="설정">
+      <nav class="snav" role="tablist" aria-orientation="vertical">
+        <h2>설정</h2>
+        <button role="tab" data-go="set-me" data-tab="me"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c.9-3.4 3.7-5.2 7-5.2s6.1 1.8 7 5.2"/></svg>내 정보</button>
+        <button role="tab" data-go="set-notify" data-tab="notify"><svg class="i" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>알림</button>
+        <button role="tab" data-go="set-display" data-tab="display"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none"/></svg>화면</button>
+        <button role="tab" data-go="set-chat" data-tab="chat"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6l-4 3.5V16a2.5 2.5 0 0 1-2.5-2.5Z"/></svg>대화</button>
+        <button role="tab" data-go="set-security" data-tab="security"><svg class="i" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9V6Z"/><path d="m9 12 2 2 4-4"/></svg>보안·개인정보</button>
+        <button role="tab" data-go="set-app" data-tab="app"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></svg>PC 앱</button>
+        <div class="ver"><b>상상톡</b><br>PC 앱 1.3.0 · 웹 0.9.0</div>
+      </nav>
+
+      <!-- 내 정보 -->
+      <section class="spane" data-tab="me" role="tabpanel">
+        <header><h3>내 정보</h3><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="profile">
+            <img src="assets/turtle-front.png" alt="내 프로필 사진">
+            <div><b>박지민</b><small>주무관 · 홍보실</small><span class="soon"><button class="btn line sm" disabled style="opacity:.55;cursor:default">사진 바꾸기</button>사진 변경은 준비 중입니다</span></div>
+          </div>
+          <div class="sgroup">
+            <h4>인사 정보 <span class="policy"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>관리자가 관리합니다</span></h4>
+            <dl class="kv"><dt>이름</dt><dd>박지민</dd><dt>부서</dt><dd>홍보실</dd><dt>직책</dt><dd>주무관</dd><dt>로그인 ID</dt><dd>2026012</dd></dl>
+          </div>
+          <div class="sgroup">
+            <h4>비밀번호</h4>
+            <div class="srow pw-closed"><span class="lb"><b>비밀번호 바꾸기</b><small>마지막 변경 2026년 9월 1일</small></span><button class="btn line sm" data-go="set-pw">바꾸기</button></div>
+            <div class="pwform pw-open">
+              <div class="field"><label for="pw0">현재 비밀번호</label><input id="pw0" type="password" autocomplete="current-password" value="12345678"></div>
+              <div class="field"><label for="pw1">새 비밀번호</label><input id="pw1" type="password" autocomplete="new-password" value="12345678901"><div class="help">10자 이상, 영문·숫자·특수문자 중 2가지 이상</div></div>
+              <div class="field"><label for="pw2">새 비밀번호 확인</label><input id="pw2" type="password" autocomplete="new-password" value="1234567890" style="border-color:var(--danger-500)"><div class="err-line"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg>새 비밀번호와 같지 않습니다.</div></div>
+              <div class="acts"><button class="btn primary sm" disabled>비밀번호 바꾸기</button><button class="btn ghost sm" data-go="set-me">취소</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 알림 -->
+      <section class="spane" data-tab="notify" role="tabpanel">
+        <header><h3>알림</h3><span class="saved" id="saved"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨</span><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="sgroup">
+            <h4>잠시 알림 끄기</h4>
+            <p class="desc">끈 동안에는 멘션도 알리지 않습니다. 중요 메시지만 알립니다.</p>
+            <div class="snz-on snz-only"><svg class="i" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 3.5l16 17"/></svg>오후 3:20까지 꺼짐 (58분 남음)<button class="txt-btn" data-go="set-notify">다시 켜기</button></div>
+            <div class="srow snz-hide"><span class="segs" role="radiogroup" aria-label="잠시 끄기 시간"><button role="radio" aria-checked="false" data-go="set-snoozed">1시간</button><button role="radio" aria-checked="false" data-go="set-snoozed">3시간</button><button role="radio" aria-checked="false" data-go="set-snoozed">오늘 하루</button><button role="radio" aria-checked="false">직접 입력</button></span></div>
+          </div>
+
+          <div class="sgroup">
+            <h4>알림 미리 보기 <span class="policy pol-only"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>기관 정책으로 고정됨</span></h4>
+            <p class="desc pol-hide">Windows 알림 팝업에 무엇을 보여 줄지 고릅니다.</p>
+            <p class="desc pol-only">관리자가 알림 내용을 숨기도록 정했습니다. 바꾸려면 관리자에게 문의하세요.</p>
+            <div class="rcards" role="radiogroup" aria-label="미리 보기" id="pvCards">
+              <button class="rcard" role="radio" aria-checked="true" data-pv="full"><b>전체</b><span class="toast-mini"><span class="app"><img src="assets/emblem.png" alt="">상상톡</span><b>강예린 · 홍보 협업방</b><span>@박지민 현수막 문구 확인 부탁드려요.</span></span></button>
+              <button class="rcard" role="radio" aria-checked="false" data-pv="name"><b>이름만</b><span class="toast-mini"><span class="app"><img src="assets/emblem.png" alt="">상상톡</span><b>강예린 · 홍보 협업방</b><span>새 메시지</span></span></button>
+              <button class="rcard" role="radio" aria-checked="false" data-pv="none"><b>숨김</b><span class="toast-mini"><span class="app"><img src="assets/emblem.png" alt="">상상톡</span><b>상상톡</b><span>새 메시지가 왔습니다</span></span></button>
+            </div>
+          </div>
+
+          <div class="sgroup">
+            <h4>소리와 작업표시줄</h4>
+            <div class="srow"><span class="lb"><b>알림음</b><small>Windows 알림 소리 중에서 고릅니다.</small></span>
+              <select class="sel" aria-label="알림음"><option>기본 소리</option><option>메신저</option><option>메일</option><option>미리 알림</option><option>소리 없음</option></select>
+              <button class="btn line sm">소리 들어 보기</button></div>
+            <div class="srow"><span class="lb"><b>작업표시줄 깜박임</b><small>창이 뒤에 있을 때 새 알림이 오면 작업표시줄 아이콘을 깜박입니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="작업표시줄 깜박임"></button></div>
+            <div class="srow"><span class="lb"><b>내 글에 단 답장은 알림 끈 방에서도 받기</b><small>멘션은 항상 받습니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="답장은 알림 끈 방에서도 받기"></button></div>
+          </div>
+
+          <div class="sgroup">
+            <h4>키워드 알림</h4>
+            <p class="desc">이 단어가 들어간 메시지는 멘션처럼 알립니다. 알림 끈 방에서도 알리고, 방해 금지 중에는 알리지 않습니다.</p>
+            <div class="kws">
+              <span class="kw">예산<button aria-label="예산 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+              <span class="kw">감사<button aria-label="감사 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+              <span class="kw">군수님<button aria-label="군수님 빼기"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+            </div>
+            <div class="kw-add"><input class="inp" placeholder="키워드 입력 (2~30자)" aria-label="새 키워드"><button class="btn line sm">추가</button><span class="note">3/20</span></div>
+          </div>
+
+          <div class="sgroup">
+            <h4>방해 금지 <span class="note" style="font-weight:500;font-size:12px;color:var(--ink-3)">내 상태 창에서 옮겨 왔습니다</span></h4>
+            <div class="srow"><span class="lb"><b>정해진 시간에 알림 끄기</b><small>중요 메시지는 방해 금지 중에도 알립니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="방해 금지"></button></div>
+            <div class="dnd-row"><input type="time" value="18:00" aria-label="시작">~<input type="time" value="09:00" aria-label="끝"><label><input type="checkbox" class="cb" checked>주말 종일</label></div>
+          </div>
+
+          <div class="sgroup">
+            <h4>알림 끈 대화방 <span class="note" style="font-weight:500;font-size:12px;color:var(--ink-3)">2</span></h4>
+            <div class="mrooms">
+              <div class="mroom"><span class="av group"><svg class="i" viewBox="0 0 24 24"><circle cx="9.5" cy="8.5" r="3"/><path d="M3.8 19c.7-3.2 3-4.8 5.7-4.8s5 1.6 5.7 4.8"/><circle cx="17" cy="9.5" r="2.2"/><path d="M15.8 14.4c2 .1 3.6 1.4 4.2 4"/></svg></span><span><b>총무팀 협업</b><small>4명</small></span><button class="txt-btn">알림 켜기</button></div>
+              <div class="mroom"><span class="av notice"><svg class="i" viewBox="0 0 24 24"><path d="M4 10v4a1 1 0 0 0 1 1h2l6 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16.5 9a4 4 0 0 1 0 6"/></svg></span><span><b>전체 공지</b><small>음성군청 전 직원</small></span><button class="txt-btn">알림 켜기</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 화면 -->
+      <section class="spane" data-tab="display" role="tabpanel">
+        <header><h3>화면</h3><span class="saved"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨</span><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="sgroup">
+            <h4>테마</h4>
+            <div class="tcards" role="radiogroup" aria-label="테마">
+              <button class="tcard" role="radio" aria-checked="false" data-theme-pick="system"><span class="tprev sys"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>시스템 설정</b></button>
+              <button class="tcard" role="radio" aria-checked="true" data-theme-pick="light"><span class="tprev light"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>밝게</b></button>
+              <button class="tcard" role="radio" aria-checked="false" data-theme-pick="dark"><span class="tprev dark"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>어둡게</b></button>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>글자 크기</h4>
+            <p class="desc">메시지, 대화방 목록, 입력창 글자에 적용됩니다.</p>
+            <span class="segs" role="radiogroup" aria-label="글자 크기"><button role="radio" data-font-pick="small">작게</button><button role="radio" data-font-pick="normal">보통</button><button role="radio" data-font-pick="large">크게</button></span>
+            <div class="fs-sample"><div class="bubble">축제 홍보물 2차 시안 오늘 오후에 공유하겠습니다.</div></div>
+          </div>
+          <div class="sgroup">
+            <h4>대화창 밀도</h4>
+            <div class="dcards" role="radiogroup" aria-label="대화창 밀도">
+              <button class="tcard" role="radio" data-density-pick="comfortable"><span class="dprev"><span></span><span></span><span></span></span><b>보통</b></button>
+              <button class="tcard" role="radio" data-density-pick="compact"><span class="dprev compact"><span></span><span></span><span></span><span></span><span></span></span><b>좁게 <small style="font-weight:500;color:var(--ink-3)">한 화면에 더 많이</small></b></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 대화 -->
+      <section class="spane" data-tab="chat" role="tabpanel">
+        <header><h3>대화</h3><span class="saved"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨</span><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="sgroup">
+            <h4>보내기 키</h4>
+            <div class="radios" role="radiogroup" aria-label="보내기 키">
+              <label class="radio"><input type="radio" name="ent" checked><kbd class="k">Enter</kbd>로 보내기<small>줄 바꿈은 Shift+Enter</small></label>
+              <label class="radio"><input type="radio" name="ent"><kbd class="k">Ctrl</kbd>+<kbd class="k">Enter</kbd>로 보내기<small>줄 바꿈은 Enter</small></label>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>사진</h4>
+            <div class="srow"><span class="lb"><b>사진 자동으로 보기</b><small>끄면 "사진 보기"를 누르기 전에는 사진을 받지 않습니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="사진 자동으로 보기"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4>대화방 목록 정렬</h4>
+            <p class="desc">즐겨찾기한 대화방은 항상 맨 위에 둡니다.</p>
+            <span class="segs" role="radiogroup" aria-label="정렬"><button role="radio" aria-checked="true">최근 대화순</button><button role="radio" aria-checked="false">이름순</button></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 보안·개인정보 -->
+      <section class="spane" data-tab="security" role="tabpanel">
+        <header><h3>보안·개인정보</h3><span class="saved"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨</span><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="sgroup">
+            <h4>자동 잠금과 자리 비움</h4>
+            <div class="srow"><span class="lb"><b>자동 잠금</b><small>기관 설정 30분보다 짧게만 고를 수 있습니다.</small></span>
+              <select class="sel" aria-label="자동 잠금"><option>기관 설정 따르기 (30분)</option><option>5분</option><option>10분</option><option>15분</option></select></div>
+            <div class="srow"><span class="lb"><b>자동 자리 비움</b><small>이 시간 동안 입력이 없으면 상태를 "자리 비움"으로 바꿉니다.</small></span>
+              <select class="sel" aria-label="자동 자리 비움"><option>5분</option><option selected>10분</option><option>15분</option><option>30분</option><option>60분</option></select></div>
+          </div>
+          <div class="sgroup">
+            <h4>공개 설정</h4>
+            <p class="desc">끄면 그 정보가 다른 사람에게 보이지 않습니다.</p>
+            <div class="srow"><span class="lb"><b>읽음 확인 보내기</b><small>끄면 내가 읽어도 상대 화면의 안 읽은 사람 수가 줄지 않습니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="읽음 확인 보내기"></button></div>
+            <div class="srow"><span class="lb"><b>접속 상태 공개</b><small>끄면 다른 사람에게 항상 "오프라인"으로 보입니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="접속 상태 공개"></button></div>
+            <div class="srow"><span class="lb"><b>입력 중 표시 보내기</b><small>끄면 내가 입력하는 동안 "입력 중"이 보이지 않습니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="입력 중 표시 보내기"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4>내 로그인 목록</h4>
+            <div class="sess">
+              <div class="ses"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></svg></span><span><b>PC 앱<span class="cur">지금 이 기기</span></b><small>10.20.31.57 · 오늘 오전 8:12 로그인</small></span><span></span></div>
+              <div class="ses"><span class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/></svg></span><span><b>브라우저</b><small>10.20.44.102 · 2시간 전 사용</small></span><button class="btn line sm danger">로그아웃</button></div>
+              <div class="ses"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></svg></span><span><b>PC 앱</b><small>10.20.12.9 · 11월 14일 사용</small></span><button class="btn line sm danger">로그아웃</button></div>
+            </div>
+            <button class="btn line sm danger">다른 곳에서 모두 로그아웃</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- PC 앱 -->
+      <section class="spane" data-tab="app" role="tabpanel">
+        <header><h3>PC 앱</h3><span class="saved"><svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨</span><button class="icon-btn" aria-label="닫기" data-go="base"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+        <div class="sbody">
+          <div class="sgroup">
+            <h4>실행</h4>
+            <div class="srow"><span class="lb"><b>Windows 시작 시 실행</b><small>트레이 메뉴의 "시작 시 실행"과 같은 설정입니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Windows 시작 시 실행"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4>창 닫기 버튼(×)</h4>
+            <div class="radios" role="radiogroup" aria-label="창 닫기 버튼">
+              <label class="radio"><input type="radio" name="close" checked>트레이로 숨기기<small>알림은 계속 받습니다</small></label>
+              <label class="radio"><input type="radio" name="close">상상톡 종료<small>알림을 받지 않습니다</small></label>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>창 불러오기 단축키</h4>
+            <p class="desc">어느 프로그램에서든 이 키를 누르면 상상톡 창이 앞으로 나옵니다.</p>
+            <div class="srow"><span class="lb"><b>단축키 사용</b></span><button class="toggle" role="switch" aria-checked="true" aria-label="단축키 사용"></button></div>
+            <div class="srow" style="border-top:0;padding-top:0"><span class="lb"><span class="hk"><kbd class="k">Ctrl</kbd><span class="plus">+</span><kbd class="k">Shift</kbd><span class="plus">+</span><kbd class="k">Space</kbd></span>
+              <div class="err-line hk-err"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg>다른 프로그램이 쓰는 단축키입니다. 다른 키를 골라 주세요.</div></span>
+              <button class="btn line sm">바꾸기</button></div>
+          </div>
+          <div class="sgroup">
+            <h4>화면 캡처 막기 <span class="policy"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>기관 정책으로 고정됨</span></h4>
+            <div class="srow locked"><span class="lb"><b>캡처 막기 켜짐</b><small>관리자가 정한 설정입니다.</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="화면 캡처 막기" disabled></button></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- N7: 받는 쪽 데스크톱 알림(데스크톱 앱이 띄움, 닫을 때까지 남음) -->
+<div class="wtoast" role="alert">
+  <div class="app"><img src="assets/emblem.png" alt="">상상톡<span class="x">✕</span></div>
+  <div class="bd"><span class="av c2">서준</span><div><span class="urg"><svg class="i" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></svg>중요 메시지</span><b>이서준 · 홍보 협업방</b><p>군수님 현장 방문이 오후 3시에서 2시로 당겨졌습니다. 부스 담당자는…</p></div></div>
+  <div class="acts"><button>열기</button><button>닫기</button></div>
+</div>
+
+<nav class="switcher" aria-label="시안 화면">
+  <span>v4</span>
+  <button data-go="base" aria-pressed="true">기본</button>
+  <button data-go="set-me">내 정보</button>
+  <button data-go="set-pw">비밀번호</button>
+  <button data-go="set-notify">알림</button>
+  <button data-go="set-snoozed">잠시 끔</button>
+  <button data-go="set-locked">정책 고정</button>
+  <button data-go="set-err">저장 실패</button>
+  <button data-go="set-display">화면</button>
+  <button data-go="set-chat">대화</button>
+  <button data-go="set-security">보안</button>
+  <button data-go="set-app">PC 앱</button>
+  <button data-go="set-hkerr">단축키 겹침</button>
+  <button data-go="center">알림 센터</button>
+  <button data-go="center-reply">답장·반응</button>
+  <button data-go="center-empty">알림 없음</button>
+  <button data-go="snooze">잠시 끄기 메뉴</button>
+  <button data-go="snoozed">종 꺼짐</button>
+  <button data-go="sendmenu">보내기 메뉴</button>
+  <button data-go="sendmenu-all">보내기 메뉴(전체방)</button>
+  <button data-go="urgentmode">중요로 쓰기</button>
+  <button data-go="urgentlimit">중요 횟수 초과</button>
+  <button data-go="urgenttoast">중요 알림 팝업</button>
+  <button data-go="noticeset">공지 등록</button>
+  <button data-go="acked">공지 확인함</button>
+  <button data-go="ackmine">확인 N/M</button>
+  <button data-go="acklist">확인 목록</button>
+  <button data-go="ackadmin">관리자: 확인+N/M</button>
+  <button data-go="ackadmindone">관리자: 확인함+N/M</button>
+  <a href="admin.html#policy" style="color:#9fe1d8;font-size:12px;font-weight:600;align-self:center;padding:0 10px;white-space:nowrap">관리자 정책 →</a>
+  <span class="grp"><button data-flag="theme=light">밝게</button><button data-flag="theme=dark">어둡게</button></span>
+  <span class="grp"><button data-flag="font=small">글자 작게</button><button data-flag="font=normal">보통</button><button data-flag="font=large">크게</button></span>
+  <span class="grp"><button data-flag="density=comfortable">밀도 보통</button><button data-flag="density=compact">좁게</button></span>
+</nav>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+const SNOOZED=['snoozed','set-snoozed'];
+function go(s){
+  if(!s||!document.querySelector(`.switcher [data-go="${s}"]`)) s='base';
+  const b=document.body; b.dataset.s=s;
+  $$('.switcher [data-go]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.go===s));
+  /* 설정: 탭 */
+  const tab={'set-pw':'me','set-snoozed':'notify','set-locked':'notify','set-err':'notify','set-hkerr':'app'}[s]||s.slice(4);
+  $$('.snav [role=tab]').forEach(t=>t.setAttribute('aria-selected',t.dataset.tab===tab));
+  $$('.spane').forEach(p=>p.hidden=p.dataset.tab!==tab);
+  $$('.pw-open').forEach(e=>e.hidden=s!=='set-pw'); $$('.pw-closed').forEach(e=>e.hidden=s==='set-pw');
+  const pol=s==='set-locked';
+  $$('.pol-only').forEach(e=>e.hidden=!pol); $$('.pol-hide').forEach(e=>e.hidden=pol);
+  $('#pvCards').classList.toggle('locked',pol);
+  $$('#pvCards .rcard').forEach(c=>c.setAttribute('aria-checked',c.dataset.pv===(pol?'none':'full')));
+  const sv=$('#saved'); sv.classList.toggle('err',s==='set-err');
+  sv.innerHTML=s==='set-err'
+    ?'<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg>저장하지 못해 이전 값으로 되돌렸습니다'
+    :'<svg class="i" viewBox="0 0 24 24"><path d="m5 12.5 4 4L19 7"/></svg>저장됨';
+  $$('.hk-err').forEach(e=>e.hidden=s!=='set-hkerr');
+  /* 잠시 끄기: 종 아이콘 */
+  const snz=SNOOZED.includes(s);
+  $$('.snz-only').forEach(e=>e.hidden=!snz); $$('.snz-hide').forEach(e=>e.hidden=snz);
+  const bell=$('#bell');
+  bell.classList.toggle('snoozed',snz);
+  bell.querySelector('.on-ic').hidden=snz; bell.querySelector('.off-ic').hidden=!snz;
+  bell.querySelector('.lbl').textContent=snz?'꺼짐':'알림';
+  bell.querySelector('.badge').hidden=snz||s==='center-seen'; bell.querySelector('.snz').hidden=!snz;
+  bell.setAttribute('aria-label',snz?'알림 꺼짐, 오후 3:20까지(58분 남음)':'알림 4개 안 봄');
+  bell.title=snz?'오후 3:20까지 알림 꺼짐 · 우클릭하면 다시 켜기':'알림 · 우클릭하면 잠시 끄기';
+  /* 알림 센터: 탭 */
+  const ct={center:'all','center-seen':'all','center-empty':'all','center-mention':'mention','center-reply':'reply','center-notice':'notice'}[s]||'all';
+  $$('.ncenter [role=tab]').forEach(t=>t.setAttribute('aria-selected',t.dataset.tab===ct));
+  const empty=s==='center-empty';
+  $$('#nbody [data-k]').forEach(e=>{const k=e.dataset.k.split(' ');e.hidden=empty||!(ct==='all'||k.includes(ct)||(ct==='reply'&&k.includes('reaction')))});
+  $('#ncEmpty').hidden=!empty;
+  const seen=s==='center-seen';
+  $$('.nitem').forEach(e=>{if(!e.dataset.u)e.dataset.u=e.classList.contains('unseen')?'1':'';e.classList.toggle('unseen',!seen&&e.dataset.u==='1')});
+  $('#ncCount').hidden=seen||empty; $$('.ncenter .stabs .n').forEach(n=>n.hidden=seen||empty);
+  $('#bell').setAttribute('aria-expanded',s.startsWith('center'));
+  if(location.hash.slice(1).split('~')[0]!==s) history.replaceState(null,'',s==='base'?location.pathname:'#'+s);
+  syncPicks();
+  if(window.onGo) onGo(s);
+}
+function onGo(s){
+  /* N7 */
+  const um=s==='urgentmode'||s==='urgentlimit';
+  $('.composer').classList.toggle('urgent',um);
+  $('.n7-ctx').hidden=!um; $('.n7-ctx').classList.toggle('err',s==='urgentlimit');
+  $('.n7-ok').hidden=s==='urgentlimit'; $('.n7-err').hidden=s!=='urgentlimit';
+  $('.send').lastChild.textContent=um?'중요 전송':'전송';
+  $$('.n7-can').forEach(e=>e.hidden=s==='sendmenu-all'); $$('.n7-cant').forEach(e=>e.hidden=s!=='sendmenu-all');
+  $('#sendMore').setAttribute('aria-expanded',s.startsWith('sendmenu'));
+  /* N8 */
+  /* ackadmin: 확인 대상이면서 현황도 볼 수 있는 사람(관리자 등) — 확인 버튼 + 확인 N/M 함께 */
+  const both=s==='ackadmin'||s==='ackadmindone';
+  const mine=s==='ackmine'||s==='acklist'||both;
+  $('.n8-recv').hidden=(mine&&s!=='ackadmin')||s==='acked'; $('.n8-done').hidden=s!=='acked'&&s!=='ackadmindone'; $('.n8-mine').hidden=!mine;
+  $('#ackCount').setAttribute('aria-expanded',s==='acklist');
+  $('.n8-recv').dataset.go=s==='ackadmin'?'ackadmindone':'acked';
+  $('#ackCount b').textContent=s==='ackadmindone'?'4':'3';
+}
+/* P2: <html data-theme data-font data-density> — 설정 화면에서 고르면 바로 바뀐다 */
+function syncPicks(){
+  const d=document.documentElement.dataset;
+  $$('[data-theme-pick]').forEach(x=>x.setAttribute('aria-checked',x.dataset.themePick===d.theme));
+  $$('[data-font-pick]').forEach(x=>x.setAttribute('aria-checked',x.dataset.fontPick===d.font));
+  $$('[data-density-pick]').forEach(x=>x.setAttribute('aria-checked',x.dataset.densityPick===d.density));
+  $$('.switcher [data-flag]').forEach(x=>{const [k,v]=x.dataset.flag.split('=');x.setAttribute('aria-pressed',d[k]===v)});
+}
+document.addEventListener('click',e=>{
+  const p=e.target.closest('[data-theme-pick],[data-font-pick],[data-density-pick],[data-flag]'); if(!p) return;
+  const d=document.documentElement.dataset;
+  if(p.dataset.themePick) d.theme=p.dataset.themePick;
+  if(p.dataset.fontPick) d.font=p.dataset.fontPick;
+  if(p.dataset.densityPick) d.density=p.dataset.densityPick;
+  if(p.dataset.flag){const [k,v]=p.dataset.flag.split('=');d[k]=v}
+  syncPicks();
+},true);
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-go]');
+  if(t){e.preventDefault();go(t.dataset.go);return}
+  if(e.target.classList.contains('scrim')) go('base');
+  else if(!e.target.closest('.menu,.ncenter,.rail,.readers,.switcher')&&/^(snooze|center|sendmenu|acklist)/.test(document.body.dataset.s)) go(document.body.dataset.s==='acklist'?'ackmine':'base');
+});
+$('#bell').addEventListener('contextmenu',e=>{e.preventDefault();go('snooze')});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')go('base')});
+/* 주소 예: #center~dark~large~compact (상태 뒤에 보기 옵션) */
+function fromHash(){
+  const [s,...fl]=location.hash.slice(1).split('~'), d=document.documentElement.dataset;
+  fl.forEach(f=>{if(f==='dark'||f==='light')d.theme=f;else if(['small','normal','large'].includes(f))d.font=f;else if(f==='compact'||f==='comfortable')d.density=f});
+  go(s);
+}
+addEventListener('hashchange',fromHash);
+fromHash();
+</script>
+</body>
+</html>

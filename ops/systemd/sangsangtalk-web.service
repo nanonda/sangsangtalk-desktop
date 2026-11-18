@@ -34,6 +34,8 @@
 #   # CMS에서 직원을 만들 때 로그인 ID(사번@도메인)에 붙일 내부 도메인. 비우면 관리자 본인 이메일의 도메인.
 #   # 점이 있는 도메인 이름만(예: eumseong.local). "@"를 붙이거나 잘못된 값이면 서버가 시작하지 않는다.
 #   LOGIN_DOMAIN=
+#   # --- 3단계(docs/p3-contract.md): 새 변수 없음. 관리자 정책은 web/data/policy.json(관리자 화면 "정책" 탭)에 있고,
+#   #     업로드 최대 크기는 계속 MAX_UPLOAD_MB, 기관 자동 잠금 값은 계속 AUTO_LOCK_MINUTES 다.
 #
 # 주의:
 #   - Node는 OS 인증서 저장소가 아니라 자체 CA 목록을 쓴다. 기관 내부 CA로 발급한 Zulip 인증서를 검증하려면
@@ -44,6 +46,8 @@
 #     60초 안에 5번 시작하면 더 이상 재시작하지 않고 failed가 된다. 고친 뒤 `systemctl reset-failed sangsangtalk-web` 후 시작.
 #   - 포트 43123을 바꾸면 ops/nginx/sangsangtalk.conf 의 upstream 도 함께 바꾼다.
 #   - MAX_UPLOAD_MB를 바꾸면 nginx 의 /api/files client_max_body_size 도 함께 바꾼다.
+#   - 중요 메시지 시간당 10회 제한은 이 프로세스 메모리에만 있어 재시작하면 초기화된다(ops/README.md "3단계 운영 반영" 3절).
+#   - web/data/policy.json 과 .bak 을 둘 다 읽지 못하면 서버는 돌지만 파일 올리기가 503으로 막힌다(ops/restore.md).
 #   - Node 24 공식 tarball을 /opt/node 에 설치한 경로(/opt/node/bin/node)를 쓴다(ops/rocky9.md).
 #     다른 곳에 설치했으면 ExecStart를 고친다(`command -v node`). Node 24 기준으로 개발했다.
 
@@ -76,7 +80,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-# 쓰기는 web/data 만(쪽지 인덱스·세션 파일, 2단계의 notices·prefs·admin-meta·audit/)
+# 쓰기는 web/data 만(쪽지 인덱스·세션 파일, 2단계의 notices·prefs·admin-meta·audit/, 3단계의 activity·policy)
 ReadWritePaths=/opt/sangsangtalk/web/data
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

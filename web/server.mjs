@@ -5,13 +5,21 @@ import { fileURLToPath } from "node:url";
 import https from "node:https";
 import { createHash, randomBytes } from "node:crypto";
 import { createNoteStore } from "./lib/note-store.mjs";
-import { BLOCKED_EXTENSIONS, attachmentLines, attachmentUrl, canonicalUploadPath, cleanFileName, guessType, isBlockedName } from "./lib/files.mjs";
+import { attachmentLines, extensionOf, attachmentUrl, canonicalUploadPath, cleanFileName, guessType, isBlockedName } from "./lib/files.mjs";
 import { createZulipFiles } from "./lib/zulip-files.mjs";
 import { ConfigError, loadConfig } from "./lib/runtime-config.mjs";
 import { createSessionStore } from "./lib/session-store.mjs";
-import { RECALLED_TEXT, applyMentions, messageFields, neutralizeSyntax, replyPrefix, splitRaw, widgetContent, widgetFields } from "./lib/message-format.mjs";
+import {
+  RECALLED_TEXT, URGENT_LINE, applyMentions, excerptOf, messageFields, neutralizeSyntax, replyPrefix, splitRaw, widgetContent, widgetFields,
+} from "./lib/message-format.mjs";
 import { createAuditLog } from "./lib/audit-log.mjs";
-import { createAdminMetaStore, createNoticeStore, createPrefsStore, validDnd, validPrefKeys } from "./lib/json-store.mjs";
+import { createAdminMetaStore, createNoticeStore, createPolicyStore, createPrefsStore } from "./lib/json-store.mjs";
+import { ACTIVITY_ID, createActivityStore } from "./lib/activity-store.mjs";
+import { AVATAR_ERRORS, AVATAR_MAX_BYTES, imageType, multipartBody, singleFilePart } from "./lib/avatar.mjs";
+import {
+  KEYWORD_ERRORS, KEYWORD_MAX, POLICY_BLOCKED_ERROR, applyPolicyPatch, applyPrefsPatch, blockedBy, blockedExtensionsDotted, cleanKeyword,
+  presentPolicy, presentPrefs,
+} from "./lib/settings.mjs";
 
 // The browser talks only to this process; Zulip API calls are proxied here (Zulip does not
 // allow this origin via CORS). All settings come from the environment (lib/runtime-config.mjs):
@@ -45,6 +53,15 @@ const noteStore = createNoteStore(path.join(path.dirname(fileURLToPath(import.me
 const noticeStore = createNoticeStore(path.join(dataDir, "notices.json"));
 const prefsStore = createPrefsStore(path.join(dataDir, "prefs.json"));
 const adminMeta = createAdminMetaStore(path.join(dataDir, "admin-meta.json"));
+// P3 (docs/p3-contract.md): N6 replies / reactions, D1 admin policy.
+const activityStore = createActivityStore(path.join(dataDir, "activity.json"));
+const policyStore = createPolicyStore(path.join(dataDir, "policy.json"));
+let WEB_VERSION = null;
+try {
+  WEB_VERSION = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8")).version || null;
+} catch {
+  WEB_VERSION = null;
+}
 const auditLog = createAuditLog({
   dir: path.join(dataDir, "audit"),
   keepMonths: config.auditKeepMonths,
@@ -123,15 +140,16 @@ const TYPES = {
   ".png": "image/png",
 };
 
-function zulip(method, apiPath, { auth, form, timeoutMs = 20000, signal } = {}) {
-  const body = form ? new URLSearchParams(form).toString() : null;
+// raw: { body: Buffer, contentType } instead of form (P1 avatar upload, multipart).
+function zulip(method, apiPath, { auth, form, raw, timeoutMs = 20000, signal } = {}) {
+  const body = raw ? raw.body : form ? new URLSearchParams(form).toString() : null;
   const headers = {
     accept: "application/json",
     "user-agent": "SangsangTalk/0.1",
   };
   if (auth) headers.authorization = auth;
   if (body) {
-    headers["content-type"] = "application/x-www-form-urlencoded";
+    headers["content-type"] = raw ? raw.contentType : "application/x-www-form-urlencoded";
     headers["content-length"] = Buffer.byteLength(body);
   }
 
@@ -320,6 +338,10 @@ function normalize(message, session, flags = message.flags) {
     unreadCount: null, // handleMessages fills it for my recent 1:1/group messages
     poll: widget.poll,
     todo: widget.todo,
+    // N4: Zulip's alert-word flag (set when the message arrived; my own messages never have it).
+    alerted: !fields.recalled && Array.isArray(flags) && flags.includes("has_alert_word") && message.sender_id !== session?.userId,
+    urgent: fields.urgent, // N7
+    avatarUrl: avatarUrlFor(message.sender_id, message.avatar_url), // P1: sender's photo, "" for none
   };
   if (isGeneral(message)) {
     base.kind = "channel";
@@ -473,6 +495,10 @@ function persistSessions() {
     apiKey: session.apiKey,
     expiresAt: session.expiresAt,
     peer: session.peer || null,
+    createdAt: session.createdAt || null,
+    lastSeenAt: session.lastSeenAt || null,
+    client: session.client || null,
+    ip: session.ip || null,
   }));
   sessionStore.save(records).then((result) => {
     if (result.invalid) {
@@ -507,6 +533,10 @@ async function restoreSessions() {
       fullName: record.fullName,
       peer: record.peer || null,
       expiresAt: record.expiresAt,
+      createdAt: Number.isFinite(record.createdAt) ? record.createdAt : null,
+      lastSeenAt: Number.isFinite(record.lastSeenAt) ? record.lastSeenAt : null,
+      client: record.client === "desktop" ? "desktop" : "browser",
+      ip: typeof record.ip === "string" ? record.ip.slice(0, 64) : "",
       // Event queues are not saved: a restored session registers a new one on first use.
       queueId: null,
       lastEventId: -1,
@@ -538,13 +568,59 @@ function publicUser(session) {
     // C4: set by POST /api/session/lock, cleared by a successful unlock (memory only, not across restarts).
     locked: Boolean(session.locked),
     // The browser checks files against the same limits before uploading (the server re-checks).
-    limits: { maxUploadMb: MAX_UPLOAD_MB, blockedExtensions: [...BLOCKED_EXTENSIONS] },
+    // D1: the built-in list plus the administrator's additions (policy.json).
+    limits: { maxUploadMb: MAX_UPLOAD_MB, blockedExtensions: blockedExtensionsDotted(currentPolicy()) },
     // C3 / C4 settings for the browser (WATERMARK, AUTO_LOCK_MINUTES).
     watermark: config.watermark,
     autoLockMinutes: config.autoLockMinutes,
     // Internal mail domain for login IDs (<employee no.>@<domain>), so the login form can fill it in. null = not set.
     loginDomain: config.loginDomain,
+    // P3: web version (web/package.json) and the policy values the browser applies.
+    version: WEB_VERSION,
+    policy: { forcePreviewHidden: Boolean(currentPolicy().forcePreviewHidden) },
+    avatarUrl: session.avatarUrl || "", // P1: my photo ("" for none)
   };
+}
+
+// ---- D1 policy (web/data/policy.json). Read at startup and after each change; a broken file keeps
+// the last good value (or the defaults) for display, and only the policy API answers 503. ----
+function currentPolicy() {
+  return policyStore.cached() || { version: 1, forcePreviewHidden: false, blockedExtensions: [] };
+}
+
+// policy.json unreadable (main file and .bak): uploads are refused until it reads again (fail closed),
+// and the admin policy API says what is wrong.
+const POLICY_UPLOAD_ERROR = "파일 정책을 읽지 못해 파일 올리기를 막았습니다. 서버 관리자에게 알려 주세요.";
+const POLICY_FILE_ERROR = "관리자 정책 파일(policy.json)을 읽지 못했습니다. 서버 관리자에게 알려 주세요. 그동안 파일 올리기는 막힙니다.";
+let policyBroken = false;
+
+// Reads policy.json again; false (and policyBroken) when it cannot be read.
+async function reloadPolicy() {
+  try {
+    await policyStore.get();
+    policyBroken = false;
+    return true;
+  } catch (error) {
+    if (error.code !== "JSON_STORE") throw error;
+    if (!policyBroken) console.error(`[sangsang] 관리자 정책 파일을 읽지 못했습니다 (${error.message}). 파일 올리기를 막습니다.`);
+    policyBroken = true;
+    return false;
+  }
+}
+
+function announceAll(flag) {
+  for (const session of sessions.values()) {
+    session[flag] = true;
+    session.wake?.();
+  }
+}
+
+function announceUser(userId, flag) {
+  for (const session of sessions.values()) {
+    if (session.userId !== userId) continue;
+    session[flag] = true;
+    session.wake?.();
+  }
 }
 
 // C2: the client's address. Behind the HTTPS proxy (PUBLIC_ORIGIN set) every request comes from the
@@ -626,6 +702,11 @@ async function handleLogin(request, response, { appOnly = false } = {}) {
     tail: Promise.resolve(),
     peer: null,
     expiresAt: Date.now() + SESSION_TTL_MS,
+    // P4: shown in "내 로그인 목록". The client header can be forged; it is only a label.
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+    client: request.headers["x-sangsangtalk-client"] === "desktop" ? "desktop" : "browser",
+    ip: clientIp(request),
   };
   try {
     const me = await zulip("GET", "/api/v1/users/me", { auth: basic(session) });
@@ -758,6 +839,7 @@ async function currentRole(session) {
   const me = await zulip("GET", `/api/v1/users/${session.userId}?include_custom_profile_fields=true`, { auth: basic(session) });
   if (me.json?.result !== "success" || !me.json.user) throw zulipFailure(me, "사용자 정보를 읽지 못했습니다.");
   session.role = roleName(me.json.user.role);
+  session.avatarUrl = avatarUrlFor(session.userId, me.json.user.avatar_url);
   const fieldIds = await titleFieldIds(session);
   const data = me.json.user.profile_data || {};
   session.department = fieldIds.department ? profileText(data[String(fieldIds.department)]) : "";
@@ -795,6 +877,17 @@ function profileText(entry) {
   if (!entry) return "";
   if (typeof entry === "string") return entry.trim();
   return typeof entry.value === "string" ? entry.value.trim() : "";
+}
+
+// P1: our proxy address for the photo Zulip serves locally (uploaded, or Zulip 12's generated default),
+// "" when Zulip has none here (gravatar). Zulip's file name is a hash that changes with every new photo
+// (/user_avatars/2/<hash>.png), so its start is ?v= and a changed photo is not taken from the browser cache.
+function avatarUrlFor(userId, zulipAvatarUrl) {
+  const avatarPath = localAvatarPath(zulipAvatarUrl);
+  if (!avatarPath || !Number.isSafeInteger(userId)) return "";
+  const version = avatarPath.split("?")[0].match(/\/([0-9a-f]{12})[0-9a-f]*\.[a-z]+$/i)
+    || avatarPath.match(/[?&]version=(\d{1,10})/);
+  return `/api/avatar/${userId}${version ? `?v=${version[1].toLowerCase()}` : ""}`;
 }
 
 function localAvatarPath(url) {
@@ -859,7 +952,7 @@ async function listDirectory(session) {
         fullName: user.full_name || "\uC774\uB984 \uC5C6\uC74C",
         role: roleName(user.role),
         title,
-        avatarUrl: title && avatarPath ? `/api/avatar/${user.user_id}` : "",
+        avatarUrl: title && avatarPath ? avatarUrlFor(user.user_id, user.avatar_url) : "",
       };
     })
     .sort((a, b) => a.fullName.localeCompare(b.fullName, "ko"));
@@ -1057,14 +1150,16 @@ async function originalRecalled(session, messageId) {
   return recalled;
 }
 
-// Changes replyTo in place to { id, senderName, excerpt: RECALLED_TEXT, recalled: true } where needed.
+// Changes replyTo in place to { id, senderId, senderName, excerpt: RECALLED_TEXT, recalled: true } where needed.
 async function markRecalledReplies(session, messages) {
   const ids = [...new Set(messages.filter((message) => message?.replyTo).map((message) => message.replyTo.id))];
   const recalled = new Set();
   for (const id of ids) if (await originalRecalled(session, id)) recalled.add(id);
   for (const message of messages) {
     if (message?.replyTo && recalled.has(message.replyTo.id)) {
-      message.replyTo = { id: message.replyTo.id, senderName: message.replyTo.senderName, excerpt: RECALLED_TEXT, recalled: true };
+      message.replyTo = {
+        id: message.replyTo.id, senderId: message.replyTo.senderId, senderName: message.replyTo.senderName, excerpt: RECALLED_TEXT, recalled: true,
+      };
     }
   }
   return messages;
@@ -1169,10 +1264,66 @@ async function noticeFor(session, key) {
   const found = await fetchOne(session, record.messageId);
   if (!found?.message || conversationKey(session, found.message) !== key) return null;
   const setter = await zulip("GET", `/api/v1/users/${record.setBy}`, { auth: basic(session) });
+  const ackIds = record.ackRequired ? record.ackUserIds : [];
+  const acks = record.acks || {};
   return {
     message: (await markRecalledReplies(session, [found.message]))[0],
     setByName: setter.json?.user?.full_name || "알 수 없음",
     setAt: record.setAt,
+    // N8: ackTotal is the room minus the setter when it was set. ackTarget / canViewAcks drive the buttons.
+    ackRequired: Boolean(record.ackRequired),
+    ackCount: ackIds.filter((id) => acks[String(id)]).length,
+    ackTotal: ackIds.length,
+    ackedByMe: Boolean(record.ackRequired && acks[String(session.userId)]),
+    ackTarget: ackIds.includes(session.userId),
+    canViewAcks: Boolean(record.ackRequired && (record.setBy === session.userId || isAdminRole(session.role))),
+  };
+}
+
+// N8: who must acknowledge a notice set now: everyone in the conversation except the setter.
+async function noticeAudience(session, key) {
+  if (key.startsWith("dm:")) return key.slice(3).split("-").map(Number).filter((id) => id !== session.userId);
+  if (key.startsWith("group:")) {
+    const group = await groupById(session, key.slice(6));
+    return group.memberIds.filter((id) => id !== session.userId);
+  }
+  return (await fetchMembers(session))
+    .filter((user) => !user.is_bot && user.is_active !== false && user.user_id !== session.userId)
+    .map((user) => user.user_id);
+}
+
+// POST /api/notices/ack. Acking twice is fine (same answer).
+async function ackNotice(request, session, source) {
+  const key = await noticeTarget(session, source);
+  const record = await noticeStore.get(key);
+  if (!record) throw httpError(404, "공지가 없습니다.", "notice");
+  const result = await noticeStore.ack(key, record.messageId, session.userId, Math.floor(Date.now() / 1000));
+  if (result.status === "missing") throw httpError(404, "공지가 없습니다.", "notice");
+  if (result.status === "notRequired") throw httpError(400, "확인 요청이 없는 공지입니다.", "notice");
+  if (result.status === "notTarget") throw httpError(403, "이 공지의 확인 대상이 아닙니다.", "notice");
+  if (result.status === "done") {
+    audit(request, session, "notice_ack", `${key}:${record.messageId}`);
+    announceAckChange(key, record.setBy);
+  }
+  return { notice: await noticeFor(session, key) };
+}
+
+// GET /api/notices/acks: the setter and administrators only.
+async function noticeAcks(session, source) {
+  const key = await noticeTarget(session, source);
+  const record = await noticeStore.get(key);
+  if (!record) throw httpError(404, "공지가 없습니다.", "notice");
+  if (!record.ackRequired) throw httpError(400, "확인 요청이 없는 공지입니다.", "notice");
+  if (record.setBy !== session.userId && !isAdminRole(await currentRole(session))) {
+    throw httpError(403, "공지를 등록한 사람과 관리자만 볼 수 있습니다.", "notice");
+  }
+  const names = new Map((await fetchMembers(session)).map((user) => [user.user_id, user.full_name || user.email]));
+  const name = (id) => names.get(id) || "알 수 없음";
+  return {
+    acked: record.ackUserIds.filter((id) => record.acks[String(id)])
+      .map((id) => ({ userId: id, name: name(id), at: record.acks[String(id)] }))
+      .sort((a, b) => a.at - b.at),
+    pending: record.ackUserIds.filter((id) => !record.acks[String(id)]).map((id) => ({ userId: id, name: name(id) })),
   };
 }
 
@@ -1205,13 +1356,35 @@ async function changeNotice(session, method, source) {
       throw httpError(404, "이 대화방의 메시지를 찾지 못했습니다.", "notice");
     }
     if (found.message.recalled) throw httpError(400, "회수된 메시지는 공지로 등록할 수 없습니다.", "notice");
-    await noticeStore.set(key, { messageId: found.message.id, setBy: session.userId, setAt: Math.floor(Date.now() / 1000) });
+    if (source.ackRequired !== undefined && typeof source.ackRequired !== "boolean") throw httpError(400, "확인 요청 값을 확인하세요.", "notice");
+    const notice = { messageId: found.message.id, setBy: session.userId, setAt: Math.floor(Date.now() / 1000) };
+    if (source.ackRequired) Object.assign(notice, { ackRequired: true, ackUserIds: await noticeAudience(session, key) });
+    await noticeStore.set(key, notice);
+    // N6: the activity record stays when this notice is later replaced or removed. A failed write is logged.
+    try {
+      await activityStore.addNotice({ key, ...notice, ackRequired: Boolean(notice.ackRequired) });
+    } catch (error) {
+      if (error.code !== "JSON_STORE") throw error;
+      console.error(`[sangsang] 공지 활동을 기록하지 못했습니다 (${error.message}).`);
+    }
   }
-  announceNotice(key);
+  announceNotice(key, method === "DELETE" ? null : session.userId);
   return { notice: await noticeFor(session, key) };
 }
 
+// N7: the urgent slot is taken before sending (concurrent requests cannot pass the hourly limit together)
+// and given back when the message was not sent.
 async function handleSend(session, request) {
+  const urgentSlot = { release: null };
+  try {
+    return await sendMessage(session, request, urgentSlot);
+  } catch (error) {
+    urgentSlot.release?.();
+    throw error;
+  }
+}
+
+async function sendMessage(session, request, urgentSlot) {
   const body = await readJson(request);
   const view = body.view === "dm" || body.view === "group" ? body.view : "general";
   // C5: a poll / todo replaces the text and files; it cannot be a note, a reply or carry mentions.
@@ -1239,12 +1412,26 @@ async function handleSend(session, request) {
   const hasReply = body.replyToId !== undefined && body.replyToId !== null;
   const mentioned = await mentionedPeople(session, body.mentions);
   if (body.note === true && (hasReply || mentioned.length)) throw httpError(400, "\uCABD\uC9C0\uC5D0\uB294 \uB2F5\uC7A5\u00B7\uBA58\uC158\uC744 \uC4F8 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.", "note");
+  // N7: urgent is a marker line after the reply quote (lib/message-format.mjs).
+  if (body.urgent !== undefined && typeof body.urgent !== "boolean") throw httpError(400, "\uC911\uC694 \uBA54\uC2DC\uC9C0 \uAC12\uC744 \uD655\uC778\uD558\uC138\uC694.", "urgent");
+  const urgent = body.urgent === true;
+  if (urgent) {
+    if (widget || body.note === true) throw httpError(400, "쪽지·투표·할 일은 중요 메시지로 보낼 수 없습니다.", "urgent");
+    if (view === "general" && !isAdminRole(await currentRole(session))) {
+      throw httpError(403, "\uC804\uCCB4 \uB300\uD654\uBC29\uC758 \uC911\uC694 \uBA54\uC2DC\uC9C0\uB294 \uAD00\uB9AC\uC790\uB9CC \uBCF4\uB0BC \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "urgent");
+    }
+    urgentSlot.release = reserveUrgent(session); // after the 403 check, so a refused room never uses a slot
+  }
   // A3: the quote goes in front, mentions become Zulip syntax; the reply target must be in this conversation.
   let prefix = "";
+  let replyOriginal = null;
   if (hasReply) {
     const targetKey = peer ? conversationKey(session, { kind: "dm", peerId: peer.userId }) : group ? `group:${group.groupId}` : "general";
-    prefix = await replyPrefixFor(session, body.replyToId, targetKey);
+    const reply = await replyPrefixFor(session, body.replyToId, targetKey);
+    prefix = reply.prefix;
+    replyOriginal = reply.original;
   }
+  if (urgent) prefix += `${URGENT_LINE}\n`;
   const content = [prefix + applyMentions(widget ? text : neutralizeSyntax(text), mentioned), ...files.lines].filter(Boolean).join("\n");
   if (content.length > 10000) {
     throw httpError(400, "\uBA54\uC2DC\uC9C0\uAC00 \uB108\uBB34 \uAE41\uB2C8\uB2E4.", "long");
@@ -1269,6 +1456,7 @@ async function handleSend(session, request) {
     throw error;
   }
   bindPendingNote(pendingKey, sent.json.id);
+  urgentSlot.release = null; // sent: the urgent slot is used
   const one = await zulip("GET", `/api/v1/messages/${sent.json.id}?apply_markdown=false`, {
     auth: basic(session),
   });
@@ -1295,7 +1483,19 @@ async function handleSend(session, request) {
     unreadCount: null,
     poll: null,
     todo: null,
+    alerted: false,
+    urgent,
   };
+  if (urgent) audit(request, session, "urgent_send", message.id);
+  // N6: people mentioned here see it in their activity list at once (their event poll also marks it).
+  for (const person of mentioned) invalidateActivity(person.userId);
+  // N6: a reply to someone else's message is activity for that person.
+  if (replyOriginal && replyOriginal.senderId !== session.userId && body.note !== true) {
+    await recordActivity(replyOriginal.senderId, {
+      id: `reply:${message.id}`, kind: "reply", at: message.timestamp, ...activityPlace(message, session.userId),
+      messageId: message.id, actorId: session.userId,
+    });
+  }
   // A1: nobody has read it yet.
   if (!body.note && (peer || group)) {
     message.unreadCount = peer ? 1 : group.memberIds.filter((id) => id !== session.userId).length;
@@ -1393,12 +1593,38 @@ async function replyPrefixFor(session, value, targetKey) {
   if (conversationKey(session, found.message) !== targetKey) {
     throw httpError(400, "같은 대화방의 메시지에만 답장할 수 있습니다.", "reply");
   }
-  return replyPrefix({
-    id: found.message.id,
-    senderId: found.message.senderId,
-    senderName: found.message.senderName,
-    rawContent: found.raw.content,
-  });
+  return {
+    prefix: replyPrefix({
+      id: found.message.id,
+      senderId: found.message.senderId,
+      senderName: found.message.senderName,
+      rawContent: found.raw.content,
+    }),
+    original: found.message,
+  };
+}
+
+// ---- N7 urgent messages: at most URGENT_PER_HOUR per person per hour (kept in memory) ----
+const URGENT_PER_HOUR = 10;
+const urgentSent = new Map(); // userId -> [ms]
+
+// Takes one of this hour's slots now (synchronously, so two requests cannot both see a free slot).
+// Returns a function that gives it back.
+function reserveUrgent(session) {
+  const hourAgo = Date.now() - 3600 * 1000;
+  const recent = (urgentSent.get(session.userId) || []).filter((at) => at > hourAgo);
+  if (recent.length >= URGENT_PER_HOUR) {
+    urgentSent.set(session.userId, recent);
+    throw httpError(429, "중요 메시지는 1시간에 10번까지 보낼 수 있습니다.", "urgent");
+  }
+  const mark = { at: Date.now() };
+  recent.push(mark.at);
+  urgentSent.set(session.userId, recent);
+  return () => {
+    const list = urgentSent.get(session.userId) || [];
+    const index = list.lastIndexOf(mark.at);
+    if (index !== -1) list.splice(index, 1);
+  };
 }
 
 // A4: my own message, within 10 minutes, not yet recalled. Zulip enforces the same limit.
@@ -1460,6 +1686,12 @@ async function recallMessage(session, messageId) {
   if (message.poll || message.todo) throw httpError(400, "투표·할 일은 회수할 수 없습니다.", "recall");
   const parts = splitRaw(raw.content);
   await patchContent(session, raw.id, [RECALLED_TEXT, ...parts.fileLines].join("\n"));
+  // N6: a recalled reply is no longer activity for anyone.
+  try {
+    for (const owner of await activityStore.removeMessage(raw.id)) invalidateActivity(owner);
+  } catch (error) {
+    console.error(`[sangsang] 활동 기록을 지우지 못했습니다 (${error.message}).`);
+  }
   return { message: await editedMessage(session, raw.id) };
 }
 
@@ -1539,19 +1771,312 @@ function noticeConcerns(session, key) {
   return false;
 }
 
-function announceNotice(key) {
+// setBy: who set it (N6: a notice set by someone else is new activity for everyone else in the room).
+function announceNotice(key, setBy = null) {
   for (const session of sessions.values()) {
     if (!noticeConcerns(session, key)) continue;
     session.noticesChanged = true;
+    if (setBy && setBy !== session.userId) markActivityChanged(session.userId);
     session.wake?.();
   }
 }
 
-// Reads and clears the local flags for one events answer.
-function takeLocal(session) {
-  const noticesChanged = Boolean(session.noticesChanged);
-  session.noticesChanged = false;
-  return { noticesChanged };
+// N8: a changed ack count matters only to those who may see the list (the setter, administrators).
+// Several acks within ACK_ANNOUNCE_MS are told once.
+const ACK_ANNOUNCE_MS = 3000;
+const pendingAckAnnounce = new Map(); // key -> timer
+function announceAckChange(key, setBy) {
+  if (pendingAckAnnounce.has(key)) return;
+  const timer = setTimeout(() => {
+    pendingAckAnnounce.delete(key);
+    for (const session of sessions.values()) {
+      if (!noticeConcerns(session, key) || (session.userId !== setBy && !isAdminRole(session.role))) continue;
+      session.noticesChanged = true;
+      session.wake?.();
+    }
+  }, ACK_ANNOUNCE_MS);
+  timer.unref?.();
+  pendingAckAnnounce.set(key, timer);
+}
+
+const LOCAL_FLAGS = ["noticesChanged", "activityReady", "prefsChanged", "policyChanged"];
+function hasLocal(session) {
+  return LOCAL_FLAGS.some((flag) => session[flag]);
+}
+
+// Reads and clears the local flags for one events answer. Never waits for Zulip: activity counts are
+// worked out in the background (markActivityChanged) and put on session.activityReady when ready.
+async function takeLocal(session) {
+  const out = {
+    noticesChanged: Boolean(session.noticesChanged),
+    prefsChanged: Boolean(session.prefsChanged),
+    policyChanged: Boolean(session.policyChanged),
+    activity: session.activityReady || null,
+  };
+  for (const flag of LOCAL_FLAGS) session[flag] = false;
+  session.activityReady = null;
+  return out;
+}
+
+// ---- N6 activity centre ----
+// mention / keyword: Zulip search (is:mentioned, is:alerted); reply / reaction: activity.json;
+// notice: notices.json. Last ACTIVITY_DAYS days, at most ACTIVITY_PER_KIND per kind, newest first.
+const ACTIVITY_KINDS = ["mention", "reply", "reaction", "notice", "keyword"];
+const ACTIVITY_PAGE = 50;
+
+// Where the activity is, as the owner sees it. In a 1:1 the room is the one with the actor.
+function activityPlace(message, actorId) {
+  if (message.kind === "group") return { view: "group", groupId: message.groupId };
+  if (message.kind === "dm") return { view: "dm", userId: actorId };
+  return { view: "general" };
+}
+
+// Stores one reply / reaction item for its owner and wakes the owner's sessions when it is new.
+// A failed write is logged; the send / reaction itself already happened.
+// The same item (e.g. a reaction pressed, taken back and pressed again) is announced at most once a minute.
+const ACTIVITY_REANNOUNCE_MS = 60 * 1000;
+const activityAnnounced = new Map(); // "<ownerId>:<itemId>" -> ms
+async function recordActivity(ownerId, item) {
+  try {
+    if (!(await activityStore.add(ownerId, item))) return;
+    const key = `${ownerId}:${item.id}`;
+    const now = Date.now();
+    for (const [old, at] of activityAnnounced) if (now - at > ACTIVITY_REANNOUNCE_MS) activityAnnounced.delete(old);
+    if (activityAnnounced.has(key)) {
+      invalidateActivity(ownerId); // the list changed, but the badge is not rung again
+      return;
+    }
+    activityAnnounced.set(key, now);
+    markActivityChanged(ownerId);
+  } catch (error) {
+    if (error.code !== "JSON_STORE") throw error;
+    console.error(`[sangsang] 활동 기록을 남기지 못했습니다 (${error.message}).`);
+  }
+}
+
+function activityExcerpt(message) {
+  if (message.recalled) return RECALLED_TEXT;
+  if (message.poll) return `[투표] ${message.poll.question}`.slice(0, 80);
+  if (message.todo) return `[할 일] ${message.todo.title}`.slice(0, 80);
+  const text = String(message.content || "").replace(/\s+/g, " ").trim();
+  if (text) return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  return message.attachments?.[0] ? `[파일] ${message.attachments[0].name}`.slice(0, 80) : "";
+}
+
+// Messages for a narrow, newest first (at most `count`), normalized for this user. Notes are left out.
+async function searchNarrow(session, narrow, count, noteIds) {
+  const result = await zulip("GET", `/api/v1/messages?${new URLSearchParams({
+    anchor: "newest", num_before: String(count), num_after: "0", apply_markdown: "false", narrow: JSON.stringify(narrow),
+  })}`, { auth: basic(session) });
+  if (result.json?.result !== "success") throw zulipFailure(result, "알림을 읽지 못했습니다.");
+  return (result.json.messages || [])
+    .map((raw) => normalize(raw, session))
+    .filter((message) => message && !(message.kind === "dm" && noteIds.has(message.id)));
+}
+
+// Messages by id (Zulip 10+ message_ids), normalized; ids I cannot see are missing from the map.
+async function messagesById(session, ids) {
+  const out = new Map();
+  const unique = [...new Set(ids)];
+  for (let start = 0; start < unique.length; start += 400) {
+    const chunk = unique.slice(start, start + 400);
+    const result = await zulip("GET", `/api/v1/messages?${new URLSearchParams({
+      message_ids: JSON.stringify(chunk), apply_markdown: "false",
+    })}`, { auth: basic(session) });
+    if (result.json?.result !== "success") throw zulipFailure(result, "알림을 읽지 못했습니다.");
+    for (const raw of result.json.messages || []) {
+      const message = normalize(raw, session);
+      if (message) out.set(message.id, message);
+    }
+  }
+  return out;
+}
+
+async function activityList(session) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cutoff = nowSec - 30 * 86400;
+  const stored = await activityStore.get(session.userId);
+  const names = new Map((await fetchMembers(session)).map((user) => [user.user_id, user.full_name || user.email]));
+  const noteIds = new Set((await noteRecords(session)).map((note) => note.messageId)); // read once
+  const items = [];
+  const push = (kind, id, at, message, actorId, extra = {}) => {
+    if (!message || at < cutoff) return;
+    items.push({
+      id, kind, at, ...activityPlace(message, actorId), messageId: message.id,
+      actorId, actorName: names.get(actorId) || "알 수 없음", excerpt: activityExcerpt(message), ...extra, seen: at <= stored.seenAt || stored.seenIds.has(id),
+    });
+  };
+  const mentioned = (await searchNarrow(session, [{ operator: "is", operand: "mentioned" }], 200, noteIds))
+    .filter((message) => message.senderId !== session.userId);
+  const mentionIds = new Set(mentioned.map((message) => message.id));
+  for (const message of mentioned) push("mention", `mention:${message.id}`, message.timestamp, message, message.senderId);
+  for (const message of await searchNarrow(session, [{ operator: "is", operand: "alerted" }], 200, noteIds)) {
+    if (message.senderId === session.userId || mentionIds.has(message.id)) continue;
+    push("keyword", `keyword:${message.id}`, message.timestamp, message, message.senderId);
+  }
+  // Notice activity is the record of notices set (activity.json), kept after a notice is replaced or removed.
+  // current: it is still the room's notice (notices.json); an unreadable notices.json just leaves it false.
+  let currentNotices = {};
+  try {
+    currentNotices = await noticeStore.all();
+  } catch (error) {
+    if (error.code !== "JSON_STORE") throw error;
+    console.error(`[sangsang] 공지 파일을 읽지 못했습니다 (${error.message}). 알림 센터의 current를 false로 둡니다.`);
+  }
+  const noticeEntries = (await activityStore.notices())
+    .filter((notice) => notice.setBy !== session.userId && notice.setAt >= cutoff && noticeConcerns(session, notice.key));
+  const byId = await messagesById(session, [...stored.items.map((item) => item.messageId), ...noticeEntries.map((notice) => notice.messageId)]);
+  for (const item of stored.items) {
+    push(item.kind, item.id, item.at, byId.get(item.messageId), item.actorId, item.emoji ? { emoji: item.emoji } : {});
+  }
+  for (const notice of noticeEntries) {
+    const { key } = notice;
+    const message = byId.get(notice.messageId);
+    if (!message || conversationKey(session, message) !== key) continue;
+    const now = currentNotices[key];
+    const current = Boolean(now && now.messageId === notice.messageId && now.setAt === notice.setAt);
+    push("notice", `notice:${key.replace(/[^0-9a-z:]/g, "_")}:${message.id}`, notice.setAt, message, notice.setBy, { ackRequired: notice.ackRequired, current });
+  }
+  items.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
+  return { items, ...unseenCounts(items), seenAt: stored.seenAt };
+}
+
+// { unseen, unseenByKind: { mention, reply, reaction, notice, keyword } }
+function unseenCounts(items) {
+  const unseenByKind = Object.fromEntries(ACTIVITY_KINDS.map((kind) => [kind, 0]));
+  for (const item of items) if (!item.seen) unseenByKind[item.kind] += 1;
+  return { unseen: items.filter((item) => !item.seen).length, unseenByKind };
+}
+
+// ---- Activity cache: one list per user, reused for ACTIVITY_CACHE_MS, one computation at a time per
+// user (callers share it), at most ACTIVITY_CONCURRENCY users computed at once (an @all mention or an
+// all-staff notice marks everyone). New items are counted ACTIVITY_DEBOUNCE_MS after the first change.
+const ACTIVITY_CACHE_MS = 5000;
+const ACTIVITY_DEBOUNCE_MS = 1500;
+const ACTIVITY_CONCURRENCY = 4;
+const activityCache = new Map(); // userId -> { list, at, stale, running, timer }
+let activityRunning = 0;
+const activityWaiters = [];
+
+function activityEntry(userId) {
+  if (!activityCache.has(userId)) activityCache.set(userId, { list: null, at: 0, stale: true, running: null, timer: null });
+  return activityCache.get(userId);
+}
+
+async function activitySlot() {
+  if (activityRunning < ACTIVITY_CONCURRENCY) {
+    activityRunning += 1;
+    return;
+  }
+  await new Promise((resolve) => activityWaiters.push(resolve)); // the slot is handed over as is
+}
+
+function activityRelease() {
+  const next = activityWaiters.shift();
+  if (next) next();
+  else activityRunning -= 1;
+}
+
+function invalidateActivity(userId) {
+  activityEntry(userId).stale = true;
+}
+
+function computeActivity(session) {
+  const entry = activityEntry(session.userId);
+  if (!entry.running) {
+    entry.running = (async () => {
+      await activitySlot();
+      try {
+        entry.stale = false;
+        const list = await activityList(session);
+        entry.list = list;
+        entry.at = Date.now();
+        return list;
+      } finally {
+        activityRelease();
+        entry.running = null;
+      }
+    })();
+  }
+  return entry.running;
+}
+
+// The user's list: cached when fresh, otherwise computed (shared with any computation in progress).
+async function cachedActivity(session) {
+  const entry = activityEntry(session.userId);
+  if (entry.list && !entry.stale && Date.now() - entry.at < ACTIVITY_CACHE_MS) return entry.list;
+  const list = await computeActivity(session);
+  // Changed while it was being computed: once more.
+  return entry.stale ? computeActivity(session) : list;
+}
+
+// New activity for userId: recount in the background, then put the counts on each of the user's sessions.
+function markActivityChanged(userId) {
+  const entry = activityEntry(userId);
+  entry.stale = true;
+  if (entry.timer) return;
+  entry.timer = setTimeout(async () => {
+    entry.timer = null;
+    const session = [...sessions.values()].find((one) => one.userId === userId && one.expiresAt > Date.now());
+    if (!session) return;
+    try {
+      const counts = unseenCounts((await cachedActivity(session)).items);
+      for (const one of sessions.values()) {
+        if (one.userId !== userId) continue;
+        one.activityReady = counts;
+        one.wake?.();
+      }
+    } catch (error) {
+      console.error(`[sangsang] 알림 센터 숫자를 세지 못했습니다 (${error.code || error.status || error.message}).`);
+    }
+  }, ACTIVITY_DEBOUNCE_MS);
+  entry.timer.unref?.();
+}
+
+// After a seen change: mark the cached items so the answer needs no recount.
+// The list is also marked stale: a recount already running read the old seen state and must not be reused.
+function seenInCache(userId, isSeen) {
+  const entry = activityEntry(userId);
+  entry.stale = true;
+  if (!entry.list) return null;
+  for (const item of entry.list.items) if (!item.seen && isSeen(item)) item.seen = true;
+  return unseenCounts(entry.list.items);
+}
+
+async function handleActivity(session, params) {
+  const kind = params.get("kind") || "all";
+  if (kind !== "all" && !ACTIVITY_KINDS.includes(kind)) throw httpError(400, "알림 종류를 확인하세요.", "activity");
+  const { items, unseen, unseenByKind } = await cachedActivity(session);
+  let list = kind === "all" ? items : items.filter((item) => item.kind === kind);
+  const before = params.get("before");
+  if (before) {
+    const index = list.findIndex((item) => item.id === before);
+    if (index === -1) throw httpError(400, "불러올 위치가 올바르지 않습니다.", "activity");
+    list = list.slice(index + 1);
+  }
+  return { items: list.slice(0, ACTIVITY_PAGE), hasOlder: list.length > ACTIVITY_PAGE, unseen, unseenByKind };
+}
+
+// { upTo: "<id>" | "all" } (that item and everything older) or { ids: [...] } (only those, at most 50).
+async function markActivitySeen(session, body) {
+  if (body.ids !== undefined) {
+    if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 50 || !body.ids.every((id) => typeof id === "string" && ACTIVITY_ID.test(id))) {
+      throw httpError(400, "확인할 알림을 확인하세요.", "activity");
+    }
+    // Only the format is checked: an id that is not (or no longer) in the list changes nothing.
+    const ids = [...new Set(body.ids)];
+    await activityStore.seenIds(session.userId, ids);
+    return seenInCache(session.userId, (item) => ids.includes(item.id)) || unseenCounts((await cachedActivity(session)).items);
+  }
+  let at;
+  if (body.upTo === "all") at = Math.floor(Date.now() / 1000);
+  else {
+    const found = typeof body.upTo === "string" ? (await cachedActivity(session)).items.find((item) => item.id === body.upTo) : null;
+    if (!found) throw httpError(400, "확인할 알림을 찾지 못했습니다.", "activity");
+    at = found.at;
+  }
+  await activityStore.seen(session.userId, at);
+  return seenInCache(session.userId, (item) => item.at <= at) || unseenCounts((await cachedActivity(session)).items);
 }
 
 // Messages changed by update_message / reaction / submessage events, as this user sees them now.
@@ -1597,7 +2122,7 @@ async function handleEvents(session, signal) {
   signal.addEventListener("abort", onClientGone, { once: true });
   const wakeThis = () => wake.abort();
   session.wake = wakeThis;
-  if (session.noticesChanged) wake.abort();
+  if (hasLocal(session)) wake.abort();
   let result;
   try {
     result = await zulip("GET", `/api/v1/events?${query}`, {
@@ -1607,9 +2132,9 @@ async function handleEvents(session, signal) {
     });
   } catch (error) {
     if (error.aborted && !signal.aborted) {
-      return { ...(await classifyEvents(session, [], false)), typing: [], groupsChanged: false, ...takeLocal(session) };
+      return { ...(await classifyEvents(session, [], false)), typing: [], groupsChanged: false, ...(await takeLocal(session)) };
     }
-    if (error.timeout) return { ...(await classifyEvents(session, [], false)), typing: [], groupsChanged: false, ...takeLocal(session) };
+    if (error.timeout) return { ...(await classifyEvents(session, [], false)), typing: [], groupsChanged: false, ...(await takeLocal(session)) };
     throw error;
   } finally {
     signal.removeEventListener("abort", onClientGone);
@@ -1623,8 +2148,11 @@ async function handleEvents(session, signal) {
       }
     });
     // Events may have been missed while the queue was gone, so groups (and notices) are stale too.
-    takeLocal(session);
-    return { ...(await classifyEvents(session, [], true)), typing: [], groupsChanged: true, noticesChanged: true };
+    const local = await takeLocal(session);
+    return {
+      ...(await classifyEvents(session, [], true)), typing: [], groupsChanged: true, noticesChanged: true,
+      prefsChanged: true, policyChanged: true, activity: local.activity,
+    };
   }
   if (result.json?.result !== "success") {
     const error = new Error("events");
@@ -1660,6 +2188,8 @@ async function handleEvents(session, signal) {
       // New-message events carry the flags next to the message, not inside it.
       const normalized = normalize(event.message, session, event.flags);
       if (normalized) messages.push(normalized);
+      // N6: a mention or keyword from someone else is new activity.
+      if (normalized && normalized.senderId !== session.userId && (normalized.mentionedMe || normalized.alerted)) markActivityChanged(session.userId);
       const pending = normalized?.kind === "dm" ? pendingNoteRecord(event.message) : null;
       if (pending) inFlight.push(pending);
     }
@@ -1676,7 +2206,7 @@ async function handleEvents(session, signal) {
   });
   for (const message of updated) if (message.recalled) rememberRecalled(message.id, true);
   await markRecalledReplies(session, [...messages, ...updated]);
-  return { ...(await classifyEvents(session, messages, false, inFlight, updated)), typing, groupsChanged, ...takeLocal(session) };
+  return { ...(await classifyEvents(session, messages, false, inFlight, updated)), typing, groupsChanged, ...(await takeLocal(session)) };
 }
 
 // ---- B. Group rooms: one invite-only Zulip channel per group, topic TOPIC. ----
@@ -2026,6 +2556,24 @@ async function changeReaction(session, messageId, method, emoji) {
   if (result.json?.result !== "success" && !/already exists|doesn't exist|does not exist/i.test(String(result.json?.msg || ""))) {
     throw zulipFailure(result, "반응을 바꾸지 못했습니다.");
   }
+  // N6: my reaction on someone else's message is activity for its author; taking it back removes it.
+  const owner = found.message.senderId;
+  if (owner !== session.userId) {
+    const id = `reaction:${messageId}:${session.userId}:${emoji}`;
+    if (method === "POST") {
+      await recordActivity(owner, {
+        id, kind: "reaction", at: Math.floor(Date.now() / 1000), ...activityPlace(found.message, session.userId),
+        messageId: Number(messageId), actorId: session.userId, emoji,
+      });
+    } else {
+      try {
+        if (await activityStore.remove(owner, id)) invalidateActivity(owner);
+      } catch (error) {
+        if (error.code !== "JSON_STORE") throw error;
+        console.error(`[sangsang] 활동 기록을 지우지 못했습니다 (${error.message}).`);
+      }
+    }
+  }
   return { message: (await fetchOne(session, messageId))?.message || found.message };
 }
 
@@ -2057,18 +2605,184 @@ async function listStarred(session, params) {
 }
 
 // B4·B5 prefs
+// P3: rules in lib/settings.mjs. Only the fields sent change; every session of this user gets prefsChanged.
+async function readPrefs(session) {
+  return presentPrefs(await prefsStore.get(session.userId), { policy: currentPolicy() });
+}
+
 async function patchPrefs(session, body) {
-  const change = {};
-  for (const name of ["favorites", "muted"]) {
-    if (body[name] === undefined) continue;
-    if (!validPrefKeys(body[name])) throw httpError(400, "설정 값을 확인하세요.", "prefs");
-    change[name] = body[name];
+  const result = await prefsStore.apply(session.userId, (current) => applyPrefsPatch(current, body, {
+    adminLockMinutes: config.autoLockMinutes,
+    policy: currentPolicy(),
+  }));
+  if (!result.changed) throw httpError(result.status || 400, result.error || "설정 값을 확인하세요.", "prefs");
+  announceUser(session.userId, "prefsChanged");
+  return presentPrefs(result.prefs, { policy: currentPolicy() });
+}
+
+// ---- N4 keywords = Zulip alert words ----
+async function listKeywords(session) {
+  const result = await zulip("GET", "/api/v1/users/me/alert_words", { auth: basic(session) });
+  if (result.json?.result !== "success" || !Array.isArray(result.json.alert_words)) throw zulipFailure(result, "키워드를 읽지 못했습니다.");
+  return result.json.alert_words;
+}
+
+async function changeKeyword(session, method, value) {
+  const word = cleanKeyword(value);
+  if (!word) throw httpError(400, KEYWORD_ERRORS.invalid, "keyword");
+  const current = await listKeywords(session);
+  const existing = current.find((one) => one.toLowerCase() === word.toLowerCase());
+  if (method === "POST" && existing) return { keywords: current };
+  if (method === "DELETE" && !existing) return { keywords: current };
+  if (method === "POST" && current.length >= KEYWORD_MAX) throw httpError(400, KEYWORD_ERRORS.full, "keyword");
+  const form = { alert_words: JSON.stringify([method === "POST" ? word : existing]) };
+  const result = method === "POST"
+    ? await zulip("POST", "/api/v1/users/me/alert_words", { auth: basic(session), form })
+    : await zulip("DELETE", `/api/v1/users/me/alert_words?${new URLSearchParams(form)}`, { auth: basic(session) });
+  if (result.json?.result !== "success" || !Array.isArray(result.json.alert_words)) throw zulipFailure(result, "키워드를 바꾸지 못했습니다.");
+  return { keywords: result.json.alert_words };
+}
+
+// ---- P4 privacy = Zulip personal settings ----
+const PRIVACY_FIELDS = {
+  readReceipts: ["send_read_receipts"],
+  presence: ["presence_enabled"],
+  typing: ["send_private_typing_notifications", "send_stream_typing_notifications"],
+};
+
+async function readPrivacy(session) {
+  const result = await zulip("POST", "/api/v1/register", {
+    auth: basic(session),
+    form: { fetch_event_types: JSON.stringify(["user_settings"]), event_types: JSON.stringify(["user_settings"]) },
+  });
+  const settings = result.json?.user_settings;
+  if (result.json?.result !== "success" || !settings) throw zulipFailure(result, "공개 설정을 읽지 못했습니다.");
+  if (result.json.queue_id) {
+    zulip("DELETE", `/api/v1/events?${new URLSearchParams({ queue_id: result.json.queue_id })}`, { auth: basic(session), timeoutMs: 5000 }).catch(() => {});
   }
-  if (body.dnd !== undefined) {
-    if (!validDnd(body.dnd)) throw httpError(400, "방해 금지 설정을 확인하세요.", "prefs");
-    change.dnd = body.dnd;
+  return {
+    readReceipts: settings.send_read_receipts !== false,
+    presence: settings.presence_enabled !== false,
+    typing: settings.send_private_typing_notifications !== false && settings.send_stream_typing_notifications !== false,
+  };
+}
+
+async function patchPrivacy(session, body) {
+  const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+  if (!keys.length || !keys.every((key) => Object.hasOwn(PRIVACY_FIELDS, key) && typeof body[key] === "boolean")) {
+    throw httpError(400, "공개 설정 값을 확인하세요.", "privacy");
   }
-  return (await prefsStore.update(session.userId, change)).prefs;
+  const form = {};
+  for (const key of keys) for (const field of PRIVACY_FIELDS[key]) form[field] = JSON.stringify(body[key]);
+  const result = await zulip("PATCH", "/api/v1/settings", { auth: basic(session), form });
+  if (result.json?.result !== "success") throw zulipFailure(result, "공개 설정을 바꾸지 못했습니다.");
+  return readPrivacy(session);
+}
+
+// ---- P4 my sessions. The id is a short hash of the session key, never the key itself. ----
+function sessionHash(sid) {
+  return createHash("sha256").update(sid).digest("hex").slice(0, 12);
+}
+
+function mySessions(request, session) {
+  const currentSid = cookieValue(request, "sangsang_sid");
+  const list = [];
+  for (const [sid, other] of sessions) {
+    if (other.userId !== session.userId || other.expiresAt <= Date.now()) continue;
+    list.push({
+      id: sessionHash(sid),
+      current: sid === currentSid,
+      client: other.client === "desktop" ? "desktop" : "browser",
+      createdAt: other.createdAt ? new Date(other.createdAt).toISOString() : null,
+      lastSeenAt: other.lastSeenAt ? new Date(other.lastSeenAt).toISOString() : null,
+      ip: other.ip || "",
+    });
+  }
+  list.sort((a, b) => Number(b.current) - Number(a.current) || String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
+  return { sessions: list };
+}
+
+function revokeMySessions(request, session, { id = null, others = false }) {
+  const currentSid = cookieValue(request, "sangsang_sid");
+  const targets = [];
+  for (const [sid, other] of sessions) {
+    if (other.userId !== session.userId) continue;
+    if (others ? sid !== currentSid : sessionHash(sid) === id) targets.push([sid, other]);
+  }
+  if (!others) {
+    if (!targets.length) throw httpError(404, "로그인 기록을 찾지 못했습니다.", "session");
+    if (targets[0][0] === currentSid) throw httpError(400, "지금 쓰는 로그인은 로그아웃 버튼으로 끝내세요.", "session");
+  }
+  for (const [sid, other] of targets) closeSession(sid, other);
+  audit(request, session, "session_revoke", others ? `others:${targets.length}` : id);
+  return { ended: targets.length };
+}
+
+// ---- P1 my photo = Zulip /users/me/avatar (no API changes anyone else's photo). ----
+const AVATAR_BODY_MAX = AVATAR_MAX_BYTES + 64 * 1024; // the file plus multipart headers
+
+function readAvatarBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let over = false;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > AVATAR_BODY_MAX) over = true; // keep reading (discarded) so the 413 reaches the browser
+      else chunks.push(chunk);
+      if (size > AVATAR_BODY_MAX + 1024 * 1024) request.destroy();
+    });
+    request.on("end", () => (over ? reject(httpError(413, AVATAR_ERRORS.size, "avatar")) : resolve(Buffer.concat(chunks))));
+    request.on("error", reject);
+    request.on("close", () => over && reject(httpError(413, AVATAR_ERRORS.size, "avatar")));
+  });
+}
+
+function avatarFailure(result, fallback) {
+  const message = String(result.json?.msg || "");
+  if (/disabled/i.test(message)) return httpError(403, AVATAR_ERRORS.disabled, "avatar");
+  if (/larger than/i.test(message)) return httpError(413, AVATAR_ERRORS.size, "avatar");
+  if (/decode|image|Unsupported/i.test(message)) return httpError(415, AVATAR_ERRORS.type, "avatar");
+  return zulipFailure(result, fallback);
+}
+
+async function changeMyAvatar(request, session, method) {
+  let result;
+  if (method === "DELETE") {
+    result = await zulip("DELETE", "/api/v1/users/me/avatar", { auth: basic(session) });
+  } else {
+    if (Number(request.headers["content-length"]) > AVATAR_BODY_MAX) {
+      request.resume();
+      throw httpError(413, AVATAR_ERRORS.size, "avatar");
+    }
+    const file = singleFilePart(await readAvatarBody(request), request.headers["content-type"]);
+    if (!file) throw httpError(400, AVATAR_ERRORS.missing, "avatar");
+    if (file.length > AVATAR_MAX_BYTES) throw httpError(413, AVATAR_ERRORS.size, "avatar");
+    const type = imageType(file);
+    if (!type) throw httpError(415, AVATAR_ERRORS.type, "avatar");
+    const raw = multipartBody("file", type === "image/png" ? "avatar.png" : "avatar.jpg", type, file);
+    result = await zulip("POST", "/api/v1/users/me/avatar", { auth: basic(session), raw, timeoutMs: 60000 });
+  }
+  if (result.json?.result !== "success") {
+    audit(request, session, "avatar_change", method === "DELETE" ? "delete" : "upload", false);
+    throw avatarFailure(result, "사진을 바꾸지 못했습니다.");
+  }
+  const avatarUrl = avatarUrlFor(session.userId, result.json.avatar_url);
+  for (const other of sessions.values()) if (other.userId === session.userId) other.avatarUrl = avatarUrl;
+  audit(request, session, "avatar_change", method === "DELETE" ? "delete" : "upload");
+  return { avatarUrl };
+}
+
+// ---- D1 admin policy ----
+async function patchPolicy(request, session, body) {
+  const result = await policyStore.apply((current) => applyPolicyPatch(current, body));
+  if (!result.changed) {
+    audit(request, session, "admin_policy", "", false);
+    throw httpError(result.status || 400, result.error || "정책 값을 확인하세요.", "policy");
+  }
+  audit(request, session, "admin_policy", `preview:${result.policy.forcePreviewHidden ? 1 : 0},ext:${result.policy.blockedExtensions.length}`);
+  announceAll("policyChanged");
+  return presentPolicy(result.policy, { maxUploadMb: MAX_UPLOAD_MB });
 }
 
 // B7 scheduled messages (Zulip /scheduled_messages; Zulip sends them at the time, attachments included)
@@ -2112,6 +2826,7 @@ async function listScheduled(session) {
 }
 
 async function createScheduled(session, body) {
+  if (body.urgent) throw httpError(400, "예약 메시지는 중요 메시지로 보낼 수 없습니다.", "urgent");
   const text = typeof body.content === "string" ? body.content.trim() : "";
   const files = attachmentLines(body.attachments);
   if (!files) throw httpError(400, "첨부 파일을 확인하세요.", "attachments");
@@ -2472,6 +3187,12 @@ async function handleAdmin(request, response, session, url) {
   const method = request.method;
   const route = url.pathname;
   const userMatch = route.match(/^\/api\/admin\/users\/(\d{1,15})(\/deactivate|\/reactivate|\/password|\/logout)?$/);
+  // D1 policy: blockedExtensions is the merged list, builtInExtensions the part that cannot be removed.
+  if (route === "/api/admin/policy" && (method === "GET" || method === "PATCH")) {
+    if (!(await reloadPolicy())) throw httpError(503, POLICY_FILE_ERROR, "policy");
+    if (method === "GET") return presentPolicy(currentPolicy(), { maxUploadMb: MAX_UPLOAD_MB });
+    return patchPolicy(request, session, await readJson(request));
+  }
   if (route === "/api/admin/users" && method === "GET") {
     const { users } = await adminUsers(session);
     audit(request, session, "admin_users_list", "");
@@ -2538,6 +3259,9 @@ async function handleUpload(session, request, response) {
   const name = cleanFileName(request.headers["x-file-name"]);
   if (!name) throw httpError(400, "파일 이름이 없습니다.", "name");
   if (isBlockedName(name)) throw httpError(415, "이 형식의 파일은 보낼 수 없습니다.", "type");
+  // D1: the administrator's extra extensions (built-in ones are caught above). Unknown policy -> refuse.
+  if (policyBroken && !(await reloadPolicy())) throw httpError(503, POLICY_UPLOAD_ERROR, "policy");
+  if (blockedBy(currentPolicy(), extensionOf(name))) throw httpError(415, POLICY_BLOCKED_ERROR, "type");
   const sizeHeader = request.headers["content-length"];
   const size = Number(sizeHeader);
   if (sizeHeader === undefined || !Number.isSafeInteger(size)) {
@@ -2676,7 +3400,10 @@ async function onRequest(request, response) {
     //  - locked: only the session, unlock, lock and logout APIs (423 otherwise, events included).
     if (url.pathname.startsWith("/api/")) {
       const gated = sessionFrom(request);
-      const always = ["/api/session", "/api/session/status", "/api/logout", "/api/login", "/api/health"];
+      // P4: last use, in memory, at most once a minute (saved with the next session-file write).
+      const passive = ["/api/session/status", "/api/session/lock", "/api/session/unlock"].includes(url.pathname);
+      if (gated && !gated.locked && !passive && Date.now() - (gated.lastSeenAt || 0) >= 60 * 1000) gated.lastSeenAt = Date.now();
+      const always =["/api/session", "/api/session/status", "/api/logout", "/api/login", "/api/health"];
       if (gated?.locked && ![...always, "/api/session/unlock", "/api/session/lock"].includes(url.pathname)) {
         sendJson(response, 423, { error: "화면이 잠겨 있습니다.", locked: true });
         return;
@@ -2962,8 +3689,12 @@ async function onRequest(request, response) {
     // ---- P2 2-A ----
     const messageRoute = url.pathname.match(/^\/api\/messages\/(\d{1,15})(\/readers|\/recall|\/reactions|\/star|\/poll|\/todo)?$/);
     const scheduledRoute = url.pathname.match(/^\/api\/scheduled\/(\d{1,15})$/);
-    const p2Route = messageRoute || scheduledRoute || [
+    const mySessionRoute = url.pathname.match(/^\/api\/me\/sessions\/([a-f0-9]{12})$/);
+    const p2Route = messageRoute || scheduledRoute || mySessionRoute || [
       "/api/search", "/api/messages/read", "/api/notices", "/api/status", "/api/prefs", "/api/starred", "/api/typing", "/api/scheduled",
+      // P3
+      "/api/notices/ack", "/api/notices/acks", "/api/activity", "/api/activity/seen", "/api/keywords", "/api/me/sessions", "/api/me/privacy",
+      "/api/me/avatar",
     ].includes(url.pathname);
     if (p2Route) {
       const session = sessionFrom(request);
@@ -3032,7 +3763,58 @@ async function onRequest(request, response) {
         return;
       }
       if (url.pathname === "/api/prefs" && method === "GET") {
-        sendJson(response, 200, await prefsStore.get(session.userId));
+        sendJson(response, 200, await readPrefs(session));
+        return;
+      }
+      // ---- P3 (docs/p3-contract.md) ----
+      if (url.pathname === "/api/notices/ack" && method === "POST") {
+        sendJson(response, 200, await ackNotice(request, session, await readJson(request)));
+        return;
+      }
+      if (url.pathname === "/api/notices/acks" && method === "GET") {
+        sendJson(response, 200, await noticeAcks(session, Object.fromEntries(url.searchParams)));
+        return;
+      }
+      if (url.pathname === "/api/activity" && method === "GET") {
+        sendJson(response, 200, await handleActivity(session, url.searchParams));
+        return;
+      }
+      if (url.pathname === "/api/activity/seen" && method === "POST") {
+        sendJson(response, 200, await markActivitySeen(session, await readJson(request)));
+        return;
+      }
+      if (url.pathname === "/api/keywords" && method === "GET") {
+        sendJson(response, 200, { keywords: await listKeywords(session) });
+        return;
+      }
+      if (url.pathname === "/api/keywords" && (method === "POST" || method === "DELETE")) {
+        const value = method === "POST" ? (await readJson(request)).keyword : url.searchParams.get("keyword");
+        sendJson(response, 200, await changeKeyword(session, method, value));
+        return;
+      }
+      if (url.pathname === "/api/me/sessions" && method === "GET") {
+        sendJson(response, 200, mySessions(request, session));
+        return;
+      }
+      if (url.pathname === "/api/me/sessions" && method === "DELETE") {
+        if (url.searchParams.get("others") !== "1") throw httpError(400, "로그아웃할 로그인을 고르세요.", "session");
+        sendJson(response, 200, revokeMySessions(request, session, { others: true }));
+        return;
+      }
+      if (mySessionRoute && method === "DELETE") {
+        sendJson(response, 200, revokeMySessions(request, session, { id: mySessionRoute[1] }));
+        return;
+      }
+      if (url.pathname === "/api/me/avatar" && (method === "POST" || method === "DELETE")) {
+        sendJson(response, 200, await changeMyAvatar(request, session, method));
+        return;
+      }
+      if (url.pathname === "/api/me/privacy" && method === "GET") {
+        sendJson(response, 200, await readPrivacy(session));
+        return;
+      }
+      if (url.pathname === "/api/me/privacy" && method === "PATCH") {
+        sendJson(response, 200, await patchPrivacy(session, await readJson(request)));
         return;
       }
       if (url.pathname === "/api/prefs" && method === "PATCH") {
@@ -3124,6 +3906,8 @@ await pruneAudit();
 setInterval(pruneAudit, 24 * 60 * 60 * 1000).unref();
 // Saved sessions are back before the first request is accepted.
 const restored = await restoreSessions();
+// D1: policy.json (or its .bak) is read now; if neither reads, uploads stay refused until it does.
+await reloadPolicy();
 console.log(`[sangsang] Zulip ${zulipUrl.origin} — TLS ${config.tls.mode}; 세션 ${sessionStore.enabled ? `디스크 저장(복원 ${restored}개)` : "메모리"}${config.publicOrigin ? `; 공개 주소 ${config.publicOrigin}` : ""}`);
 if (config.appOnlyLogin) console.log("[sangsang] APP_ONLY_LOGIN=1: 데스크톱 앱(X-SangsangTalk-Client: desktop)에서만 로그인을 받습니다(안내용, 보안 통제 아님).");
 // Expired sessions leave memory and the file even if their owner never comes back.

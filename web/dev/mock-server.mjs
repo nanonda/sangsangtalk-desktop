@@ -14,6 +14,11 @@
 //     simulate "vote"(from이 그룹 12 투표의 첫 항목에 투표 → updated)
 //     simulate "rateLimit" { count }: 다음 /api 요청 count개(기본 1)를 Zulip 429처럼 거절(잠금 풀기면 30분 차단 로그아웃).
 //   MOCK_MUST_CHANGE=1: 내가 비밀번호를 먼저 바꿔야 하는 상태로 시작(다른 /api는 403).
+//   3단계(docs/p3-contract.md):
+//     "reply"(from이 내 최근 메시지에 답장 → 활동), "keyword"(from이 키워드가 든 메시지를 보냄, alerted),
+//     "urgent"(from이 그룹 중요 메시지를 보냄, groupId 선택), "reactMine"(from이 내 최근 메시지에 👏 → 활동),
+//     "ack"(from이 확인 요청 공지를 확인 → noticesChanged), "prefs"(다른 기기에서 설정을 바꾼 것처럼 prefsChanged),
+//     "policy"(관리자 정책이 바뀐 것처럼 policyChanged)
 //   예) curl -X POST localhost:43190/api/dev/simulate -H "content-type: application/json" -d "{\"type\":\"group\"}"
 import http from "node:http";
 import { readFile } from "node:fs/promises";
@@ -22,7 +27,13 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // 내려받기 이름 규칙(?name= 검증)은 실제 서버와 같은 함수를 쓴다.
-import { BLOCKED_EXTENSIONS, cleanFileName, contentDisposition, downloadName, isBlockedName } from "../lib/files.mjs";
+import { cleanFileName, contentDisposition, downloadName, extensionOf } from "../lib/files.mjs";
+// 3단계 설정·정책 검사도 실제 서버와 같은 함수를 쓴다.
+import {
+  applyPolicyPatch, applyPrefsPatch, blockedBy, blockedExtensionsDotted, cleanKeyword, emptyPolicy, KEYWORD_ERRORS, KEYWORD_MAX,
+  POLICY_BLOCKED_ERROR, presentPolicy, presentPrefs,
+} from "../lib/settings.mjs";
+import { AVATAR_ERRORS, AVATAR_MAX_BYTES, imageType, singleFilePart } from "../lib/avatar.mjs";
 
 const root = process.argv[2] || fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.argv[3] || 43190);
@@ -95,6 +106,9 @@ function msg(fields) {
     reactions: [],
     poll: null,
     todo: null,
+    // 3단계: alerted(키워드, 응답 때 present()가 채운다), urgent(중요 메시지)
+    alerted: false,
+    urgent: false,
     ...(fields.extra || {}),
   };
 }
@@ -140,7 +154,7 @@ const groupMessages = {
     msg({ id: 504, senderId: 3, kind: "group", groupId: 12, content: "회수된 메시지입니다", timestamp: now - 4700, extra: { recalled: true } }),
     msg({
       id: 505, senderId: 3, kind: "group", groupId: 12, content: "@홍길동 이 사진 보도자료에 써도 될까요?", timestamp: now - 4600,
-      replyTo: { id: 502, senderName: "박지민", excerpt: "현장 사진 첨부합니다." }, mentions: [1],
+      replyTo: { id: 502, senderId: 4, senderName: "박지민", excerpt: "현장 사진 첨부합니다." }, mentions: [1],
     }),
   ],
   13: [msg({ id: 511, senderId: 7, kind: "group", groupId: 13, content: "다음 주 협의 안건 올려 주세요.", timestamp: now - 9000 })],
@@ -179,7 +193,8 @@ function myGroup(value) {
 }
 // 실제 서버의 쪽지 인덱스(web/lib/note-store.mjs) 레코드 형식.
 const noteRecords = () => notes.map((n) => ({ messageId: n.id, senderId: n.senderId, recipientId: n.senderId === me.userId ? n.peerId : me.userId, timestamp: n.timestamp }));
-const limits = { maxUploadMb: MAX_UPLOAD_MB, blockedExtensions: [...BLOCKED_EXTENSIONS] };
+// D1: 차단 목록은 서버 기본 + 관리자 정책 추가분(policy)
+const limits = () => ({ maxUploadMb: MAX_UPLOAD_MB, blockedExtensions: blockedExtensionsDotted(policy) });
 const MOCK_ROLE = ["owner", "admin", "moderator", "member", "guest"].includes(process.env.MOCK_ROLE) ? process.env.MOCK_ROLE : "admin";
 const isAdmin = MOCK_ROLE === "owner" || MOCK_ROLE === "admin";
 
@@ -245,16 +260,30 @@ function noticeFor(key) {
   if (!notice) return null;
   const message = findMessage(notice.messageId);
   if (!message) return null;
-  return { message: present(message), setByName: nameOf(notice.setBy), setAt: notice.setAt };
+  // N8: ackTotal은 등록 때 인원(등록한 사람 제외). ackTarget(내가 확인 대상)·canViewAcks(목록 볼 수 있음)는 화면용.
+  const ackIds = notice.ackUserIds || [];
+  return {
+    message: present(message), setByName: nameOf(notice.setBy), setAt: notice.setAt,
+    ackRequired: Boolean(notice.ackRequired),
+    ackCount: notice.ackRequired ? ackIds.filter((id) => notice.acks.has(id)).length : 0,
+    ackTotal: notice.ackRequired ? ackIds.length : 0,
+    ackedByMe: Boolean(notice.ackRequired && notice.acks.has(me.userId)),
+    ackTarget: Boolean(notice.ackRequired && ackIds.includes(me.userId)),
+    canViewAcks: Boolean(notice.ackRequired && (notice.setBy === me.userId || isAdmin)),
+  };
 }
 // 응답용 사본: 보는 사람(나) 기준 필드를 채운다. withReceipt면 1:1·그룹의 최근 내 메시지에 unreadCount를 넣는다.
 function present(message, { receiptIds = null } = {}) {
-  const out = { ...message, mentionedMe: message.mentions.includes(me.userId), starred: starredIds.has(message.id), unreadCount: null };
+  const out = {
+    ...message, mentionedMe: message.mentions.includes(me.userId), starred: starredIds.has(message.id), unreadCount: null,
+    alerted: isAlerted(message),
+    avatarUrl: avatarOf(message.senderId), // P1: 보낸 사람 사진(없으면 "")
+  };
   // 답장의 원문이 회수됐으면 인용도 회수 표시(실제 서버는 원문 상태를 확인한다).
   if (message.replyTo) {
     const original = findMessage(message.replyTo.id);
     out.replyTo = original?.recalled
-      ? { id: message.replyTo.id, senderName: message.replyTo.senderName, excerpt: RECALLED_TEXT, recalled: true }
+      ? { id: message.replyTo.id, senderId: message.replyTo.senderId, senderName: message.replyTo.senderName, excerpt: RECALLED_TEXT, recalled: true }
       : { ...message.replyTo, recalled: false };
   }
   out.reactions = message.recalled ? [] : message.reactions
@@ -298,10 +327,8 @@ for (const [id, emoji, userIds] of [[502, "thumbs_up", [2, 3]], [501, "check", [
   if (target) target.reactions.push({ emoji, userIds: [...userIds] });
 }
 const statuses = new Map([[7, { code: "meeting", text: "오후 2시 회의" }], [9, { code: "leave", text: "" }]]);
-const DEFAULT_DND = { enabled: false, from: "18:00", to: "09:00", weekends: true };
-const prefs = { favorites: ["group:12"], muted: [], dnd: { ...DEFAULT_DND } };
-const PREF_KEY = /^(general|dm:\d+|group:\d+)$/;
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+// 저장된 설정(3단계 필드는 없으면 기본값). 응답은 presentPrefs()로 만든다.
+let prefsRecord = { favorites: ["group:12"], muted: [], dnd: { enabled: false, from: "18:00", to: "09:00", weekends: true } };
 let nextScheduledId = 1;
 
 // ---- 2-C 상태 ----
@@ -377,6 +404,66 @@ function widgetFrom(b) {
 }
 const scheduled = []; // { id, view, userId, groupId, content, attachments, mentions, scheduledAt, timer }
 
+// ---- 3단계 상태(docs/p3-contract.md) ----
+let WEB_VERSION = null;
+try {
+  WEB_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version || null;
+} catch {
+  WEB_VERSION = null;
+}
+// N4 키워드(실제 서버는 Zulip alert words). 남이 보낸, 회수 안 된 메시지에 키워드가 들어 있으면 alerted.
+const keywords = ["예산"];
+function isAlerted(message) {
+  if (message.senderId === me.userId || message.recalled || message.note) return false;
+  const text = message.content.toLowerCase();
+  return keywords.some((word) => text.includes(word.toLowerCase()));
+}
+// D1 관리자 정책
+let policy = emptyPolicy();
+// N7 중요 메시지: 내가 보낸 시각(초) 목록, 1시간 10번
+const URGENT_PER_HOUR = 10;
+let urgentSent = [];
+// N6 활동: 반응(우리 API를 거친 것)은 시각을 따로 둔다. key "<messageId>:<userId>:<emoji>" -> 초
+const reactionAt = new Map();
+// N6 공지 기록(실제 서버 activity.json의 notices와 같음): 공지가 바뀌거나 내려가도 남는다.
+const noticeLog = []; // { key, messageId, setBy, setAt, ackRequired }
+function logNotice(key, notice) {
+  const index = noticeLog.findIndex((one) => one.key === key && one.messageId === notice.messageId);
+  if (index !== -1) noticeLog.splice(index, 1);
+  noticeLog.push({ key, messageId: notice.messageId, setBy: notice.setBy, setAt: notice.setAt, ackRequired: Boolean(notice.ackRequired) });
+}
+let activitySeenAt = 0; // 이 시각(초)까지의 항목은 본 것으로 친다
+const activitySeenIds = new Set(); // 하나씩 확인한 항목(POST /api/activity/seen { ids })
+// { unseen, unseenByKind: { mention, reply, reaction, notice, keyword } }
+function unseenCounts(items = activityItems()) {
+  const unseenByKind = Object.fromEntries(ACTIVITY_KINDS.map((kind) => [kind, 0]));
+  for (const item of items) if (!item.seen) unseenByKind[item.kind] += 1;
+  return { unseen: items.filter((item) => !item.seen).length, unseenByKind };
+}
+// 예시: 김도윤이 내 메시지(249)에 👏, 그룹 12 공지는 확인 요청(이서준만 확인함)
+{
+  const mine = general.find((m) => m.id === 249);
+  mine.reactions.push({ emoji: "clap", userIds: [2] });
+  reactionAt.set("249:2:clap", now - 3000);
+  Object.assign(notices.get("group:12"), { ackRequired: true, ackUserIds: [1, 3, 4], acks: new Map([[3, now - 5000]]) });
+  logNotice("group:12", notices.get("group:12"));
+}
+const ACTIVITY_PAGE = 50;
+const ACTIVITY_KINDS = ["mention", "reply", "reaction", "notice", "keyword"];
+// P4 내 로그인 목록(예시). id는 세션 키가 아닌 짧은 해시.
+const mySessions = [
+  { id: "a1b2c3d4e5f6", current: true, client: "browser", createdAt: new Date(Date.now() - 3600e3).toISOString(), lastSeenAt: new Date().toISOString(), ip: "127.0.0.1" },
+  { id: "0f9e8d7c6b5a", current: false, client: "desktop", createdAt: new Date(Date.now() - 86400e3).toISOString(), lastSeenAt: new Date(Date.now() - 600e3).toISOString(), ip: "10.0.20.31" },
+];
+// P4 공개 설정(실제 서버는 Zulip 개인 설정)
+const privacy = { readReceipts: true, presence: true, typing: true };
+// P1 내 사진(실제 서버는 Zulip /users/me/avatar). MOCK_AVATAR_DISABLED=1이면 조직 설정으로 막힌 것처럼 403.
+const AVATAR_DISABLED = process.env.MOCK_AVATAR_DISABLED === "1";
+let myAvatar = null; // { data, type, version }
+let avatarVersion = 1;
+// 사진이 없으면 "". 바꿀 때마다 ?v=가 바뀌어 캐시된 옛 사진을 쓰지 않는다.
+const avatarOf = (userId) => (userId === me.userId && myAvatar ? `/api/avatar/${me.userId}?v=${myAvatar.version}` : "");
+
 // ---- 근무 상태 ----
 const presence = { 2: "active", 3: "idle", 4: "active", 5: "offline", 6: "idle", 7: "active", 8: "offline", 9: "offline", 10: "active", 11: "idle" };
 let myStatus = "active";
@@ -389,7 +476,7 @@ const clients = new Map(); // id -> { messages, groupsChanged, waiter, lastSeen 
 function clientFor(id) {
   let client = clients.get(id);
   if (!client) {
-    client = { messages: [], updated: [], typing: [], groupsChanged: false, noticesChanged: false, waiter: null, lastSeen: Date.now() };
+    client = { messages: [], updated: [], typing: [], groupsChanged: false, noticesChanged: false, activity: null, prefsChanged: false, policyChanged: false, waiter: null, lastSeen: Date.now() };
     clients.set(id, client);
   }
   client.lastSeen = Date.now();
@@ -398,7 +485,8 @@ function clientFor(id) {
 function flushClient(client) {
   // 대기 중인 /api/events가 없으면 다음 폴링 때까지 쌓아 둔다(폴링 사이 이벤트 유실 방지).
   if (!client.waiter) return;
-  if (!client.messages.length && !client.updated.length && !client.typing.length && !client.groupsChanged && !client.noticesChanged) return;
+  if (!client.messages.length && !client.updated.length && !client.typing.length && !client.groupsChanged && !client.noticesChanged
+    && !client.activity && !client.prefsChanged && !client.policyChanged) return;
   const payload = {
     ...emptyEvents(),
     messages: client.messages,
@@ -407,19 +495,25 @@ function flushClient(client) {
     typing: client.typing,
     groupsChanged: client.groupsChanged,
     noticesChanged: client.noticesChanged,
+    activity: client.activity,
+    prefsChanged: client.prefsChanged,
+    policyChanged: client.policyChanged,
   };
   client.messages = [];
   client.updated = [];
   client.typing = [];
   client.groupsChanged = false;
   client.noticesChanged = false;
+  client.activity = null;
+  client.prefsChanged = false;
+  client.policyChanged = false;
   const res = client.waiter;
   client.waiter = null;
   json(res, 200, payload);
 }
-// /api/events 응답의 모든 필드(빈 값). updated·noticesChanged는 2-A, typing은 2-B.
+// /api/events 응답의 모든 필드(빈 값). updated·noticesChanged는 2-A, typing은 2-B, activity·prefsChanged·policyChanged는 3단계.
 function emptyEvents() {
-  return { messages: [], updated: [], typing: [], notes: noteRecords(), notesError: false, reset: false, groupsChanged: false, noticesChanged: false };
+  return { messages: [], updated: [], typing: [], notes: noteRecords(), notesError: false, reset: false, groupsChanged: false, noticesChanged: false, activity: null, prefsChanged: false, policyChanged: false };
 }
 function broadcast(change) {
   const now = Date.now();
@@ -437,6 +531,57 @@ function pushMessage(message) {
 }
 function groupsChanged() {
   broadcast((client) => { client.groupsChanged = true; });
+}
+// ---- 3단계 이벤트·활동 ----
+function prefsChanged() {
+  broadcast((client) => { client.prefsChanged = true; });
+}
+function policyChanged() {
+  broadcast((client) => { client.policyChanged = true; });
+}
+// 새 활동 항목이 생겼을 때만 보낸다.
+function activityChanged() {
+  const counts = unseenCounts();
+  broadcast((client) => { client.activity = counts; });
+}
+function placeOf(message) {
+  if (message.kind === "group") return { view: "group", groupId: message.groupId };
+  if (message.kind === "dm") return { view: "dm", userId: message.peerId };
+  return { view: "general" };
+}
+// 실제 서버와 같은 출처: 멘션·키워드(검색), 답장·반응(활동 저장소), 공지(공지 기록, current는 지금도 그 방 공지인지). 최근 30일, 최신순.
+function activityItems() {
+  const cutoff = Math.floor(Date.now() / 1000) - 30 * 86400;
+  const items = [];
+  const item = (kind, id, at, message, actorId, extra = {}) => items.push({
+    id, kind, at, ...placeOf(message), messageId: message.id, actorId, actorName: nameOf(actorId), excerpt: excerptOf(message), ...extra, seen: at <= activitySeenAt || activitySeenIds.has(id),
+  });
+  for (const { list } of allConversations()) {
+    for (const m of list) {
+      if (m.senderId === me.userId) continue;
+      if (!m.recalled && m.mentions.includes(me.userId)) item("mention", `mention:${m.id}`, m.timestamp, m, m.senderId);
+      else if (isAlerted(m)) item("keyword", `keyword:${m.id}`, m.timestamp, m, m.senderId);
+      const original = m.replyTo && !m.recalled ? findMessage(m.replyTo.id) : null;
+      if (original?.senderId === me.userId) item("reply", `reply:${m.id}`, m.timestamp, m, m.senderId);
+    }
+    for (const m of list) {
+      if (m.senderId !== me.userId) continue; // 회수된 내 메시지의 반응도 남긴다(요약은 "회수된 메시지입니다", 실제 서버와 같음)
+      for (const r of m.reactions) {
+        for (const userId of r.userIds) {
+          const at = reactionAt.get(`${m.id}:${userId}:${r.emoji}`);
+          if (userId !== me.userId && at) item("reaction", `reaction:${m.id}:${userId}:${r.emoji}`, at, m, userId, { emoji: r.emoji });
+        }
+      }
+    }
+  }
+  for (const notice of noticeLog) {
+    const message = findMessage(notice.messageId);
+    if (!message || notice.setBy === me.userId) continue;
+    const now = notices.get(notice.key);
+    const current = Boolean(now && now.messageId === notice.messageId && now.setAt === notice.setAt);
+    item("notice", `notice:${notice.key.replace(/[^0-9a-z:]/g, "_")}:${message.id}`, notice.setAt, message, notice.setBy, { ackRequired: notice.ackRequired, current });
+  }
+  return items.filter((one) => one.at >= cutoff).sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
 }
 function clientId(req, res) {
   const match = String(req.headers.cookie || "").match(/(?:^|;\s*)mock_cid=([a-f0-9]{16})(?:;|$)/);
@@ -558,8 +703,10 @@ http.createServer(async (req, res) => {
       }
       const mine = staff.get(me.userId);
       return json(res, 200, {
-        ...me, role: MOCK_ROLE, isAdmin, peer: null, limits, watermark: WATERMARK, autoLockMinutes: AUTO_LOCK_MINUTES,
+        ...me, role: MOCK_ROLE, isAdmin, peer: null, limits: limits(), watermark: WATERMARK, autoLockMinutes: AUTO_LOCK_MINUTES,
         department: mine.department, position: mine.position, mustChangePassword: Boolean(mine.mustChangePassword), locked, loginDomain: LOGIN_DOMAIN,
+        // 3단계: 웹 버전(web/package.json), 관리자 정책 중 화면이 알아야 하는 값
+        version: WEB_VERSION, policy: { forcePreviewHidden: policy.forcePreviewHidden }, avatarUrl: avatarOf(me.userId),
       });
     }
     // C1: 내 비밀번호 바꾸기(첫 로그인 등). 목업의 현재 비밀번호는 "test".
@@ -654,6 +801,16 @@ http.createServer(async (req, res) => {
       const widget = widgetFrom(b); // C5
       if (widget?.error) return json(res, 400, { error: widget.error });
       if (widget && b.note) return json(res, 400, { error: "쪽지로는 투표·할 일을 보낼 수 없습니다." });
+      // N7 중요 메시지: 쪽지·투표·할 일은 400, 전체 대화방은 관리자만, 1시간 10번
+      if (b.urgent !== undefined && typeof b.urgent !== "boolean") return json(res, 400, { error: "중요 메시지 값을 확인하세요." });
+      const urgent = b.urgent === true;
+      if (urgent) {
+        if (widget || b.note) return json(res, 400, { error: "쪽지·투표·할 일은 중요 메시지로 보낼 수 없습니다." });
+        if (b.view !== "group" && b.view !== "dm" && !isAdmin) return json(res, 403, { error: "전체 대화방의 중요 메시지는 관리자만 보낼 수 있습니다." });
+        const hourAgo = Date.now() / 1000 - 3600;
+        urgentSent = urgentSent.filter((at) => at > hourAgo);
+        if (urgentSent.length >= URGENT_PER_HOUR) return json(res, 429, { error: "중요 메시지는 1시간에 10번까지 보낼 수 있습니다." });
+      }
       const content = widget ? "" : typeof b.content === "string" ? b.content.trim() : "";
       const attachments = widget ? [] : cleanAttachments(b.attachments, false);
       if (!content && !attachments.length && !widget) return json(res, 400, { error: "메시지를 입력하세요." });
@@ -662,14 +819,14 @@ http.createServer(async (req, res) => {
       if (b.replyToId !== undefined && b.replyToId !== null) {
         const original = findMessage(Number(b.replyToId));
         if (!original) return json(res, 404, { error: "답장할 메시지를 찾지 못했습니다." });
-        replyTo = { id: original.id, senderName: original.senderName, excerpt: excerptOf(original), _conversation: conversationOf(original).key };
+        replyTo = { id: original.id, senderId: original.senderId, senderName: original.senderName, excerpt: excerptOf(original), _conversation: conversationOf(original).key };
       }
       const mentions = Array.isArray(b.mentions)
         ? [...new Set(b.mentions.map(Number).filter((id) => id === me.userId || people.some((x) => x.userId === id)))]
         : [];
       const extra = (target) => {
         if (replyTo && replyTo._conversation !== target) return { error: "같은 대화방의 메시지에만 답장할 수 있습니다." };
-        return { replyTo: replyTo && { id: replyTo.id, senderName: replyTo.senderName, excerpt: replyTo.excerpt }, mentions };
+        return { replyTo: replyTo && { id: replyTo.id, senderId: replyTo.senderId, senderName: replyTo.senderName, excerpt: replyTo.excerpt }, mentions };
       };
       let message;
       if (b.view === "group") {
@@ -697,6 +854,11 @@ http.createServer(async (req, res) => {
         general.push(message);
       }
       if (widget) Object.assign(message, widget);
+      if (urgent) {
+        message.urgent = true;
+        urgentSent.push(Date.now() / 1000);
+        audit("urgent_send", message.id);
+      }
       if (attachments.length) audit("file_upload", message.id);
       // 보낸 사람의 응답에만 크기가 들어간다(저장된 메시지는 size: null).
       const conversation = message.note ? null : conversationOf(message);
@@ -807,10 +969,159 @@ http.createServer(async (req, res) => {
         const message = findMessage(Number(b.messageId));
         if (!message || conversationOf(message).key !== target.key) return json(res, 404, { error: "이 대화방의 메시지를 찾지 못했습니다." });
         if (message.recalled) return json(res, 400, { error: "회수된 메시지는 공지로 등록할 수 없습니다." });
-        notices.set(target.key, { messageId: message.id, setBy: me.userId, setAt: Math.floor(Date.now() / 1000) });
+        if (b.ackRequired !== undefined && typeof b.ackRequired !== "boolean") return json(res, 400, { error: "확인 요청 값을 확인하세요." });
+        const notice = { messageId: message.id, setBy: me.userId, setAt: Math.floor(Date.now() / 1000) };
+        // N8: 확인 대상은 등록 때의 대화방 인원(등록한 사람 제외)
+        if (b.ackRequired) Object.assign(notice, { ackRequired: true, ackUserIds: participants(message).filter((id) => id !== me.userId), acks: new Map() });
+        notices.set(target.key, notice);
+        logNotice(target.key, notice);
       }
       noticesChanged();
       return json(res, 200, { notice: noticeFor(target.key) });
+    }
+    // N8 공지 확인. 같은 사람이 다시 확인해도 그대로(200).
+    if (p === "/api/notices/ack" && method === "POST") {
+      const b = await body(req);
+      const target = noticeKey(b.view, b.userId, b.groupId);
+      if (target.error) return json(res, target.status, { error: target.error });
+      const notice = notices.get(target.key);
+      if (!notice) return json(res, 404, { error: "공지가 없습니다." });
+      if (!notice.ackRequired) return json(res, 400, { error: "확인 요청이 없는 공지입니다." });
+      if (!notice.ackUserIds.includes(me.userId)) return json(res, 403, { error: "이 공지의 확인 대상이 아닙니다." });
+      if (!notice.acks.has(me.userId)) {
+        notice.acks.set(me.userId, Math.floor(Date.now() / 1000));
+        audit("notice_ack", `${target.key}:${notice.messageId}`);
+        noticesChanged();
+      }
+      return json(res, 200, { notice: noticeFor(target.key) });
+    }
+    if (p === "/api/notices/acks" && method === "GET") {
+      const target = noticeKey(url.searchParams.get("view"), url.searchParams.get("userId"), url.searchParams.get("groupId"));
+      if (target.error) return json(res, target.status, { error: target.error });
+      const notice = notices.get(target.key);
+      if (!notice) return json(res, 404, { error: "공지가 없습니다." });
+      if (!notice.ackRequired) return json(res, 400, { error: "확인 요청이 없는 공지입니다." });
+      if (notice.setBy !== me.userId && !isAdmin) return json(res, 403, { error: "공지를 등록한 사람과 관리자만 볼 수 있습니다." });
+      const acked = notice.ackUserIds.filter((id) => notice.acks.has(id)).map((id) => ({ userId: id, name: nameOf(id), at: notice.acks.get(id) })).sort((a, b) => a.at - b.at);
+      const pending = notice.ackUserIds.filter((id) => !notice.acks.has(id)).map((id) => ({ userId: id, name: nameOf(id) }));
+      return json(res, 200, { acked, pending });
+    }
+
+    // ---- 3단계: 알림 센터 ----
+    if (p === "/api/activity" && method === "GET") {
+      const kind = url.searchParams.get("kind") || "all";
+      if (kind !== "all" && !ACTIVITY_KINDS.includes(kind)) return json(res, 400, { error: "알림 종류를 확인하세요." });
+      const all = activityItems();
+      let list = kind === "all" ? all : all.filter((item) => item.kind === kind);
+      const before = url.searchParams.get("before");
+      if (before) {
+        const index = list.findIndex((item) => item.id === before);
+        if (index === -1) return json(res, 400, { error: "불러올 위치가 올바르지 않습니다." });
+        list = list.slice(index + 1);
+      }
+      return json(res, 200, { items: list.slice(0, ACTIVITY_PAGE), hasOlder: list.length > ACTIVITY_PAGE, ...unseenCounts(all) });
+    }
+    if (p === "/api/activity/seen" && method === "POST") {
+      const b = await body(req);
+      const all = activityItems();
+      // { ids: [...] }(최대 50): 그 항목만. 목록에 없는 id는 무시한다.
+      if (b.ids !== undefined) {
+        const ok = Array.isArray(b.ids) && b.ids.length && b.ids.length <= 50 && b.ids.every((id) => typeof id === "string" && /^(mention|keyword|reply|reaction|notice):[0-9a-z_:]{1,80}$/.test(id));
+        if (!ok) return json(res, 400, { error: "확인할 알림을 확인하세요." });
+        for (const id of b.ids) if (all.some((item) => item.id === id)) activitySeenIds.add(id);
+        return json(res, 200, unseenCounts());
+      }
+      if (b.upTo === "all") activitySeenAt = Math.max(activitySeenAt, Math.floor(Date.now() / 1000));
+      else {
+        const found = typeof b.upTo === "string" ? all.find((item) => item.id === b.upTo) : null;
+        if (!found) return json(res, 400, { error: "확인할 알림을 찾지 못했습니다." });
+        activitySeenAt = Math.max(activitySeenAt, found.at);
+      }
+      return json(res, 200, unseenCounts());
+    }
+
+    // N4 키워드 알림
+    if (p === "/api/keywords" && method === "GET") return json(res, 200, { keywords: [...keywords] });
+    if (p === "/api/keywords" && (method === "POST" || method === "DELETE")) {
+      const word = cleanKeyword(method === "POST" ? (await body(req)).keyword : url.searchParams.get("keyword"));
+      if (!word) return json(res, 400, { error: KEYWORD_ERRORS.invalid });
+      const index = keywords.findIndex((one) => one.toLowerCase() === word.toLowerCase());
+      if (method === "POST" && index === -1) {
+        if (keywords.length >= KEYWORD_MAX) return json(res, 400, { error: KEYWORD_ERRORS.full });
+        keywords.push(word);
+      }
+      if (method === "DELETE" && index !== -1) keywords.splice(index, 1);
+      return json(res, 200, { keywords: [...keywords] });
+    }
+
+    // P4 내 로그인 목록
+    if (p === "/api/me/sessions" && method === "GET") {
+      // 실제 서버처럼 지금 쓰는 로그인은 방금 쓴 것으로 보인다.
+      for (const one of mySessions) if (one.current) one.lastSeenAt = new Date().toISOString();
+      return json(res, 200, { sessions: mySessions.map((one) => ({ ...one })) });
+    }
+    if (p === "/api/me/sessions" && method === "DELETE") {
+      if (url.searchParams.get("others") !== "1") return json(res, 400, { error: "로그아웃할 로그인을 고르세요." });
+      const others = mySessions.filter((s) => !s.current);
+      for (const s of others) mySessions.splice(mySessions.indexOf(s), 1);
+      audit("session_revoke", `others:${others.length}`);
+      return json(res, 200, { ended: others.length });
+    }
+    const mySessionMatch = p.match(/^\/api\/me\/sessions\/([a-f0-9]{12})$/);
+    if (mySessionMatch && method === "DELETE") {
+      const found = mySessions.find((s) => s.id === mySessionMatch[1]);
+      if (!found) return json(res, 404, { error: "로그인 기록을 찾지 못했습니다." });
+      if (found.current) return json(res, 400, { error: "지금 쓰는 로그인은 로그아웃 버튼으로 끝내세요." });
+      mySessions.splice(mySessions.indexOf(found), 1);
+      audit("session_revoke", found.id);
+      return json(res, 200, { ended: 1 });
+    }
+    // P1 내 사진: multipart 파일 하나, PNG·JPG(파일 내용으로 판단), 5MB까지
+    if (p === "/api/me/avatar" && (method === "POST" || method === "DELETE")) {
+      if (AVATAR_DISABLED) {
+        req.resume();
+        return json(res, 403, { error: AVATAR_ERRORS.disabled });
+      }
+      if (method === "DELETE") {
+        myAvatar = null;
+        audit("avatar_change", "delete");
+        return json(res, 200, { avatarUrl: "" });
+      }
+      if (Number(req.headers["content-length"]) > AVATAR_MAX_BYTES + 64 * 1024) {
+        req.resume();
+        return json(res, 413, { error: AVATAR_ERRORS.size });
+      }
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > AVATAR_MAX_BYTES + 64 * 1024) return json(res, 413, { error: AVATAR_ERRORS.size });
+        chunks.push(chunk);
+      }
+      const file = singleFilePart(Buffer.concat(chunks), req.headers["content-type"]);
+      if (!file) return json(res, 400, { error: AVATAR_ERRORS.missing });
+      if (file.length > AVATAR_MAX_BYTES) return json(res, 413, { error: AVATAR_ERRORS.size });
+      const type = imageType(file);
+      if (!type) return json(res, 415, { error: AVATAR_ERRORS.type });
+      avatarVersion += 1;
+      myAvatar = { data: Buffer.from(file), type, version: avatarVersion };
+      audit("avatar_change", "upload");
+      return json(res, 200, { avatarUrl: avatarOf(me.userId) });
+    }
+    const avatarMatch = p.match(/^\/api\/avatar\/(\d+)$/);
+    if (avatarMatch && method === "GET") {
+      if (Number(avatarMatch[1]) !== me.userId || !myAvatar) return json(res, 404, { error: "아바타를 찾지 못했습니다." });
+      res.writeHead(200, { "content-type": myAvatar.type, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" });
+      return res.end(myAvatar.data);
+    }
+    // P4 공개 설정
+    if (p === "/api/me/privacy" && method === "GET") return json(res, 200, { ...privacy });
+    if (p === "/api/me/privacy" && method === "PATCH") {
+      const b = await body(req);
+      const keys = Object.keys(b || {});
+      if (!keys.length || !keys.every((key) => Object.hasOwn(privacy, key) && typeof b[key] === "boolean")) return json(res, 400, { error: "공개 설정 값을 확인하세요." });
+      Object.assign(privacy, b);
+      return json(res, 200, { ...privacy });
     }
 
     // A2. 검색(쪽지 제외). 최신순 50개, before는 그보다 예전 것.
@@ -894,9 +1205,10 @@ http.createServer(async (req, res) => {
     if (p === "/api/files" && method === "POST") {
       const name = cleanFileName(req.headers["x-file-name"]); // 실제 서버와 같은 정리 규칙
       if (!name) return json(res, 400, { error: "파일 이름이 없습니다." });
-      if (isBlockedName(name)) {
+      const blocked = blockedBy(policy, extensionOf(name)); // D1: 서버 기본 목록 + 관리자 정책
+      if (blocked) {
         req.resume();
-        return json(res, 415, { error: "이 형식의 파일은 보낼 수 없습니다." });
+        return json(res, 415, { error: blocked.builtIn ? "이 형식의 파일은 보낼 수 없습니다." : POLICY_BLOCKED_ERROR });
       }
       // 실제 서버는 Zulip tus 업로드에 크기가 필요해 content-length 없는 요청을 411로 거절한다.
       if (req.headers["content-length"] === undefined) {
@@ -986,25 +1298,14 @@ http.createServer(async (req, res) => {
     }
 
     // B4·B5: 대화방 즐겨찾기·알림 끄기·방해 금지(상상톡 서버의 사용자 설정)
-    if (p === "/api/prefs" && method === "GET") return json(res, 200, prefs);
+    // 3단계: notify·display·chat·presence·lock 추가(검사는 lib/settings.mjs, 실제 서버와 같음). 응답에 locked(정책으로 고정된 필드).
+    if (p === "/api/prefs" && method === "GET") return json(res, 200, presentPrefs(prefsRecord, { policy }));
     if (p === "/api/prefs" && method === "PATCH") {
-      const b = await body(req);
-      for (const name of ["favorites", "muted"]) {
-        if (b[name] === undefined) continue;
-        if (!Array.isArray(b[name]) || b[name].length > 200 || !b[name].every((key) => typeof key === "string" && PREF_KEY.test(key))) {
-          return json(res, 400, { error: "설정 값을 확인하세요." });
-        }
-      }
-      if (b.dnd !== undefined) {
-        const d = b.dnd;
-        if (!d || typeof d !== "object" || typeof d.enabled !== "boolean" || !TIME.test(d.from) || !TIME.test(d.to) || typeof d.weekends !== "boolean") {
-          return json(res, 400, { error: "방해 금지 설정을 확인하세요." });
-        }
-      }
-      if (b.favorites) prefs.favorites = [...new Set(b.favorites)];
-      if (b.muted) prefs.muted = [...new Set(b.muted)];
-      if (b.dnd) prefs.dnd = { enabled: b.dnd.enabled, from: b.dnd.from, to: b.dnd.to, weekends: b.dnd.weekends };
-      return json(res, 200, prefs);
+      const result = applyPrefsPatch(prefsRecord, await body(req), { adminLockMinutes: AUTO_LOCK_MINUTES, policy });
+      if (!result.change) return json(res, result.status, { error: result.error });
+      prefsRecord = result.change;
+      prefsChanged();
+      return json(res, 200, presentPrefs(prefsRecord, { policy }));
     }
 
     // B4: 별표 목록(최신순 100개, 쪽지 제외)
@@ -1037,6 +1338,7 @@ http.createServer(async (req, res) => {
     }
     if (p === "/api/scheduled" && method === "POST") {
       const b = await body(req);
+      if (b.urgent) return json(res, 400, { error: "예약 메시지는 중요 메시지로 보낼 수 없습니다." });
       const content = typeof b.content === "string" ? b.content.trim() : "";
       const attachments = cleanAttachments(b.attachments, false);
       if (!content && !attachments.length) return json(res, 400, { error: "메시지를 입력하세요." });
@@ -1129,6 +1431,34 @@ http.createServer(async (req, res) => {
         statuses.set(from, { code: "meeting", text: "회의 중" });
         return json(res, 200, { ok: true });
       }
+      // ---- 3단계 흉내 ----
+      if (b.type === "prefs") {
+        prefsChanged();
+        return json(res, 200, { ok: true });
+      }
+      if (b.type === "policy") {
+        if (typeof b.forcePreviewHidden === "boolean") policy = { ...policy, forcePreviewHidden: b.forcePreviewHidden };
+        policyChanged();
+        return json(res, 200, { ok: true, policy: presentPolicy(policy, { maxUploadMb: MAX_UPLOAD_MB }) });
+      }
+      if (b.type === "reactMine") {
+        const target = allConversations().flatMap((c) => c.list).filter((m) => m.senderId === me.userId && !m.recalled).sort((x, y) => y.id - x.id)[0];
+        if (!target) return json(res, 400, { error: "내가 보낸 메시지가 없습니다." });
+        let reaction = target.reactions.find((r) => r.emoji === "clap");
+        if (!reaction) target.reactions.push((reaction = { emoji: "clap", userIds: [] }));
+        if (!reaction.userIds.includes(from)) reaction.userIds.push(from);
+        reactionAt.set(`${target.id}:${from}:clap`, Math.floor(Date.now() / 1000));
+        pushUpdated(target);
+        activityChanged();
+        return json(res, 200, { ok: true, message: present(target) });
+      }
+      if (b.type === "ack") {
+        const entry = [...notices.entries()].find(([, n]) => n.ackRequired && n.ackUserIds.includes(from) && !n.acks.has(from));
+        if (!entry) return json(res, 400, { error: "그 직원이 확인할 확인 요청 공지가 없습니다." });
+        entry[1].acks.set(from, Math.floor(Date.now() / 1000));
+        noticesChanged();
+        return json(res, 200, { ok: true, notice: noticeFor(entry[0]) });
+      }
       if (b.type === "read") {
         // from이 자기가 속한 대화의 내 메시지를 모두 읽는다. 실제처럼 이벤트는 없다(화면이 30초마다 다시 읽음).
         let count = 0;
@@ -1161,12 +1491,40 @@ http.createServer(async (req, res) => {
         const list = groupMessages[group.groupId] || [];
         const last = list[list.length - 1];
         if (!last) return json(res, 400, { error: "그룹에 메시지가 없습니다." });
-        notices.set(`group:${group.groupId}`, { messageId: last.id, setBy: group.memberIds.find((id) => id !== me.userId) || from, setAt: Math.floor(Date.now() / 1000) });
+        const setBy = group.memberIds.find((id) => id !== me.userId) || from;
+        const notice = { messageId: last.id, setBy, setAt: Math.floor(Date.now() / 1000) };
+        // { ackRequired: true }면 확인 요청 공지(나도 확인 대상)
+        if (b.ackRequired) Object.assign(notice, { ackRequired: true, ackUserIds: group.memberIds.filter((id) => id !== setBy), acks: new Map() });
+        notices.set(`group:${group.groupId}`, notice);
+        logNotice(`group:${group.groupId}`, notice);
         noticesChanged();
+        activityChanged();
         return json(res, 200, { ok: true, notice: noticeFor(`group:${group.groupId}`) });
       }
       let message;
-      if (b.type === "mention") {
+      let activity = false;
+      if (b.type === "reply") {
+        const original = allConversations().flatMap((c) => c.list).filter((m) => m.senderId === me.userId && !m.recalled && m.kind !== "dm").sort((x, y) => y.id - x.id)[0];
+        if (!original) return json(res, 400, { error: "내가 보낸 메시지가 없습니다." });
+        const sender = original.kind === "group" ? groups.get(original.groupId).memberIds.find((id) => id !== me.userId) : from;
+        message = msg({
+          senderId: sender, kind: original.kind, groupId: original.groupId, content: "네, 확인했습니다.",
+          replyTo: { id: original.id, senderId: original.senderId, senderName: original.senderName, excerpt: excerptOf(original) },
+        });
+        conversationOf(original).list.push(message);
+        activity = true;
+      } else if (b.type === "keyword") {
+        const word = keywords[0] || "예산";
+        message = msg({ senderId: from, kind: "channel", content: `${word} 관련 자료 확인 부탁드립니다.` });
+        general.push(message);
+        activity = true;
+      } else if (b.type === "urgent") {
+        const group = groups.get(Number(b.groupId)) || myGroups()[0];
+        const sender = group.memberIds.find((id) => id !== me.userId) || from;
+        message = msg({ senderId: sender, kind: "group", groupId: group.groupId, content: "긴급: 오늘 15시까지 회신 바랍니다.", extra: { urgent: true } });
+        (groupMessages[group.groupId] ||= []).push(message);
+      } else if (b.type === "mention") {
+        activity = true;
         const group = groups.get(Number(b.groupId)) || myGroups()[0];
         const sender = group.memberIds.find((id) => id !== me.userId) || from;
         message = msg({ senderId: sender, kind: "group", groupId: group.groupId, content: `@${me.fullName} 확인 부탁드립니다.`, mentions: [me.userId] });
@@ -1185,7 +1543,8 @@ http.createServer(async (req, res) => {
         general.push(message);
       }
       pushMessage(message);
-      return json(res, 200, { ok: true, message });
+      if (activity) activityChanged();
+      return json(res, 200, { ok: true, message: present(message) });
     }
 
     // ---- C1 관리자 화면·API(관리자·소유자만). 모든 관리 요청은 감사 로그에 남는다. ----
@@ -1308,6 +1667,19 @@ http.createServer(async (req, res) => {
           groupsChanged();
         }
         return json(res, 200, result);
+      }
+      // D1 관리자 정책. blockedExtensions는 합친 목록, builtInExtensions는 뺄 수 없는 서버 기본 목록.
+      if (p === "/api/admin/policy" && method === "GET") return json(res, 200, presentPolicy(policy, { maxUploadMb: MAX_UPLOAD_MB }));
+      if (p === "/api/admin/policy" && method === "PATCH") {
+        const result = applyPolicyPatch(policy, await body(req));
+        if (!result.change) {
+          audit("admin_policy", "", false);
+          return json(res, result.status, { error: result.error });
+        }
+        policy = result.change;
+        audit("admin_policy", `preview:${policy.forcePreviewHidden ? 1 : 0},ext:${policy.blockedExtensions.length}`);
+        policyChanged();
+        return json(res, 200, presentPolicy(policy, { maxUploadMb: MAX_UPLOAD_MB }));
       }
       if (p === "/api/admin/audit" && method === "GET") {
         const from = url.searchParams.get("from");

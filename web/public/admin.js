@@ -3,6 +3,24 @@
 
 const $ = (selector) => document.querySelector(selector);
 const PAGE_USERS = 20;
+
+/* P2: 메신저에서 고른 테마·글자 크기를 관리 화면에도 쓴다(메신저가 localStorage에 둔 마지막 값). */
+(() => {
+  let display = {};
+  try {
+    display = JSON.parse(localStorage.getItem("sangsangtalk.display") || "{}") || {};
+  } catch {
+    display = {};
+  }
+  const dark = window.matchMedia?.("(prefers-color-scheme: dark)") || null;
+  const apply = () => {
+    // 기본은 밝게(PM 결정). "system"을 고른 사람만 Windows 설정을 따른다.
+    const theme = display.theme === "dark" ? "dark" : display.theme === "system" && dark?.matches ? "dark" : "light";
+    document.documentElement.dataset.theme = theme;
+  };
+  apply();
+  dark?.addEventListener?.("change", apply);
+})();
 const PAGE_AUDIT = 50;
 const ROLE_LABEL = { owner: "소유자", admin: "관리자", moderator: "중재자", member: "일반", guest: "손님" };
 const ACTION_LABEL = {
@@ -23,6 +41,11 @@ const ACTION_LABEL = {
   admin_audit_view: "감사 로그 보기",
   admin_user_logout: "세션 끊기",
   password_change: "비밀번호 변경",
+  urgent_send: "중요 메시지",
+  notice_ack: "공지 확인",
+  session_revoke: "다른 기기 로그아웃",
+  admin_policy: "정책 변경",
+  avatar_change: "사진 변경",
 };
 
 const state = {
@@ -168,12 +191,12 @@ function pager(container, total, size, page, onPage) {
 
 function currentView() {
   const view = location.hash.slice(1);
-  return ["users", "dept", "audit"].includes(view) ? view : "users";
+  return ["users", "dept", "audit", "policy"].includes(view) ? view : "users";
 }
 
 function route() {
   const view = currentView();
-  for (const name of ["users", "dept", "audit"]) {
+  for (const name of ["users", "dept", "audit", "policy"]) {
     $(`#view-${name}`).hidden = name !== view;
     const link = $(`#nav-${name}`);
     if (name === view) link.setAttribute("aria-current", "page");
@@ -185,7 +208,160 @@ function route() {
     loadSyncInfo();
   }
   if (view === "audit") loadAudit();
+  if (view === "policy") loadPolicy();
 }
+
+/* ── D1 정책 ── */
+
+const POLICY_EXT_MAX = 50;
+const policyState = { data: null, busy: false };
+
+function polSaved(kind, text = "") {
+  const node = $("#pol-saved");
+  node.replaceChildren();
+  node.hidden = !kind;
+  node.classList.toggle("err", kind === "err");
+  if (!kind) return;
+  node.append(icon(kind === "err" ? "a-warn" : "a-check"), kind === "err" ? text || "저장하지 못해 이전 값으로 되돌렸습니다" : "저장됨");
+}
+
+function polExtError(text) {
+  $("#pol-ext-error").hidden = !text;
+  $("#pol-ext-error span").textContent = text || "";
+  $("#pol-ext-input").classList.toggle("bad", Boolean(text));
+  if (text) $("#pol-ext-input").setAttribute("aria-invalid", "true");
+  else $("#pol-ext-input").removeAttribute("aria-invalid");
+}
+
+function normalizePolicy(data) {
+  const list = (value) => (Array.isArray(value) ? value.filter((ext) => typeof ext === "string").map((ext) => ext.replace(/^\./, "").toLowerCase()) : []);
+  const builtIn = list(data?.builtInExtensions);
+  return {
+    forcePreviewHidden: Boolean(data?.forcePreviewHidden),
+    builtIn,
+    // blockedExtensions는 합친 목록이다(기본 + 추가). 화면에서는 추가분만 따로 보인다.
+    extra: list(data?.blockedExtensions).filter((ext) => !builtIn.includes(ext)),
+    maxUploadMb: Number(data?.maxUploadMb) || 0,
+  };
+}
+
+async function loadPolicy() {
+  $("#pol-load-error").textContent = "";
+  polSaved("");
+  polExtError("");
+  try {
+    const data = await api("GET", "/api/admin/policy");
+    policyState.data = normalizePolicy(data);
+  } catch (error) {
+    if (error.status === 401 || !error.message) return;
+    $("#pol-load-error").textContent = error.message || "정책을 불러오지 못했습니다.";
+  }
+  renderPolicy();
+}
+
+function extChip(ext, removable) {
+  const chip = el("span", removable ? "ext-chip" : "ext-chip builtin", ext);
+  chip.setAttribute("role", "listitem");
+  if (!removable) {
+    chip.title = "기본 차단 · 뺄 수 없음";
+    return chip;
+  }
+  const remove = el("button", "");
+  remove.type = "button";
+  remove.setAttribute("aria-label", `${ext} 차단 풀기`);
+  remove.disabled = policyState.busy;
+  remove.append(icon("a-x"));
+  remove.addEventListener("click", () => {
+    savePolicy({ blockedExtensions: policyState.data.extra.filter((item) => item !== ext) }, `${ext} 차단을 풀었습니다.`)
+      .then(() => $("#pol-ext-input").focus());
+  });
+  chip.append(remove);
+  return chip;
+}
+
+function renderPolicy() {
+  const data = policyState.data;
+  $("#pol-body").hidden = !data;
+  if (!data) return;
+  const toggle = $("#pol-preview");
+  toggle.setAttribute("aria-checked", String(data.forcePreviewHidden));
+  toggle.disabled = policyState.busy;
+  $("#pol-preview-on").hidden = !data.forcePreviewHidden;
+  $("#pol-builtin-n").textContent = `기본 차단 ${data.builtIn.length}개 · 뺄 수 없습니다`;
+  $("#pol-builtin").replaceChildren(...data.builtIn.map((ext) => extChip(ext, false)));
+  $("#pol-extra-n").textContent = data.extra.length ? `기관에서 추가 ${data.extra.length}개` : "기관에서 추가한 형식 없음";
+  $("#pol-extra").replaceChildren(...data.extra.map((ext) => extChip(ext, true)));
+  $("#pol-extra").hidden = !data.extra.length;
+  const full = data.extra.length >= POLICY_EXT_MAX;
+  $("#pol-ext-note").textContent = `추가 ${data.extra.length}/${POLICY_EXT_MAX} · 점(.) 없이 영문·숫자 1~10자`;
+  $("#pol-ext-input").disabled = full || policyState.busy;
+  $("#pol-ext-add").disabled = full || policyState.busy;
+  $("#pol-max").textContent = data.maxUploadMb ? `${data.maxUploadMb}MB` : "-";
+}
+
+/* 바꾸면 바로 저장. 실패하면 서버 값을 다시 읽어 되돌린다. */
+async function savePolicy(change, done) {
+  if (!policyState.data || policyState.busy) return false;
+  const before = policyState.data;
+  policyState.busy = true;
+  if (change.forcePreviewHidden !== undefined) policyState.data = { ...before, forcePreviewHidden: change.forcePreviewHidden };
+  if (change.blockedExtensions !== undefined) policyState.data = { ...before, extra: change.blockedExtensions };
+  polSaved("");
+  renderPolicy();
+  try {
+    const data = await api("PATCH", "/api/admin/policy", change);
+    policyState.data = normalizePolicy(data);
+    polSaved("ok");
+    if (done) toast(done);
+    return true;
+  } catch (error) {
+    if (error.status === 401 || !error.message) return false;
+    policyState.data = before;
+    polSaved("err", (error.status === 400 || error.status === 503) && error.message ? error.message : "");
+    if (change.blockedExtensions !== undefined) polExtError(error.message || "");
+    try {
+      policyState.data = normalizePolicy(await api("GET", "/api/admin/policy"));
+    } catch {
+      // 읽지 못하면 바꾸기 전 값으로 둔다.
+    }
+    return false;
+  } finally {
+    policyState.busy = false;
+    renderPolicy();
+  }
+}
+
+$("#pol-preview").addEventListener("click", async () => {
+  const next = !policyState.data?.forcePreviewHidden;
+  await savePolicy({ forcePreviewHidden: next }, next ? "모든 직원의 알림 미리 보기를 숨김으로 고정했습니다." : "알림 미리 보기 고정을 풀었습니다.");
+  $("#pol-preview").focus();
+});
+
+$("#pol-ext-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("#pol-ext-input");
+  const ext = input.value.trim().toLowerCase().replace(/^\./, "");
+  polExtError("");
+  if (!/^[a-z0-9]{1,10}$/.test(ext)) {
+    polExtError("확장자는 점 없이 영문·숫자 1~10자로 입력해 주세요.");
+    input.focus();
+    return;
+  }
+  const data = policyState.data;
+  if (data.builtIn.includes(ext)) {
+    polExtError(`${ext}는 기본으로 막혀 있습니다.`);
+    input.focus();
+    return;
+  }
+  if (data.extra.includes(ext)) {
+    input.value = "";
+    polExtError(`${ext}는 이미 추가되어 있습니다.`);
+    input.focus();
+    return;
+  }
+  if (await savePolicy({ blockedExtensions: [...data.extra, ext] }, `${ext} 형식을 막았습니다.`)) input.value = "";
+  input.focus();
+});
 
 window.addEventListener("hashchange", route);
 

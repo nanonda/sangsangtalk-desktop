@@ -5,6 +5,20 @@ const DEFAULT_APP_URL: &str = "http://127.0.0.1:43123/";
 const APP_URL_VAR: &str = "SANGSANGTALK_APP_URL";
 const CAPTURE_BLOCK_VAR: &str = "SANGSANGTALK_CAPTURE_BLOCK";
 
+/// App commands the web page may call. Each gets an `allow-<name>` permission, granted
+/// only to APP_URL by the generated web-bridge capability.
+const BRIDGE_COMMANDS: &[&str] = &[
+    "notify",
+    "set_unread",
+    "app_info",
+    "get_autostart",
+    "set_autostart",
+    "get_close_action",
+    "set_close_action",
+    "get_hotkey",
+    "set_hotkey",
+];
+
 /// SANGSANGTALK_CAPTURE_BLOCK: unset or "0" = off (default), "1" = exclude the main
 /// window from screen capture. Any other value, including empty, fails the build.
 fn capture_block() -> bool {
@@ -34,11 +48,11 @@ fn main() {
     // tauri-build wants a &'static str; build scripts run once, so leaking is fine.
     let pattern: &'static str = Box::leak(capabilities.into_boxed_str());
 
-    // Declaring the app commands makes Tauri generate `allow-notify` / `allow-set-unread`
-    // permissions, so they are only reachable where a capability grants them.
+    // Declaring the app commands makes Tauri generate an `allow-<command>` permission for
+    // each, so they are only reachable where a capability grants them.
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(&["notify", "set_unread"]))
+            .app_manifest(tauri_build::AppManifest::new().commands(BRIDGE_COMMANDS))
             .capabilities_path_pattern(pattern),
     )
     .expect("failed to run tauri-build");
@@ -146,13 +160,19 @@ fn write_capabilities(app_url: &str) -> String {
 
     // app_url passed app_url(): only the scheme, `://`, a host of [a-z0-9.-] or IPv4, an
     // optional `:port` and `/`, so it cannot break out of the JSON string or the URL pattern.
+    // Command names are fixed lowercase identifiers from BRIDGE_COMMANDS.
+    let permissions = BRIDGE_COMMANDS
+        .iter()
+        .map(|command| format!("\"allow-{}\"", command.replace('_', "-")))
+        .collect::<Vec<_>>()
+        .join(", ");
     let bridge = format!(
         r#"{{
   "identifier": "web-bridge",
-  "description": "The SangsangTalk web app at {app_url} may only show notifications and report the unread count.",
+  "description": "The SangsangTalk web app at {app_url} may only call the app's own bridge commands (notifications, unread count, PC app settings).",
   "windows": ["main"],
   "remote": {{ "urls": ["{app_url}*"] }},
-  "permissions": ["allow-notify", "allow-set-unread"]
+  "permissions": [{permissions}]
 }}
 "#
     );

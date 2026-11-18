@@ -3,6 +3,40 @@ const bridge = await import("./desktop-bridge.js").catch(() => null);
 const notify = bridge?.notify || (() => {});
 const setUnread = bridge?.setUnread || (() => {});
 const askNotifyPermission = bridge?.askNotifyPermission || (() => {});
+const isDesktopApp = () => Boolean(bridge?.isDesktop?.());
+
+/* P2 화면: <html data-theme data-font data-density>. data-theme에는 light|dark만 넣는다(system은 matchMedia로 푼다).
+ * 마지막 값은 localStorage에 둔다(개인정보 아님). 로그인 전 화면도 이 값으로 그린다. */
+const DISPLAY_KEY = "sangsangtalk.display";
+const darkQuery = window.matchMedia?.("(prefers-color-scheme: dark)") || null;
+let displayNow = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(DISPLAY_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+})();
+
+function applyDisplay(display = displayNow) {
+  const pick = (value, list, fallback) => (list.includes(value) ? value : fallback);
+  displayNow = {
+    theme: pick(display?.theme, ["system", "light", "dark"], "light"),
+    fontSize: pick(display?.fontSize, ["small", "normal", "large"], "normal"),
+    density: pick(display?.density, ["comfortable", "compact"], "comfortable"),
+  };
+  const root = document.documentElement;
+  root.dataset.theme = displayNow.theme === "system" ? (darkQuery?.matches ? "dark" : "light") : displayNow.theme;
+  root.dataset.font = displayNow.fontSize;
+  root.dataset.density = displayNow.density;
+  try {
+    localStorage.setItem(DISPLAY_KEY, JSON.stringify(displayNow));
+  } catch {
+    // 저장하지 못하면 다음 시작 때 기본값으로 그린다.
+  }
+}
+darkQuery?.addEventListener?.("change", () => applyDisplay());
+applyDisplay();
 
 const state = {
   me: null,
@@ -64,7 +98,11 @@ const state = {
   inSearch: { open: false, query: "", hits: [], hasOlder: false, index: -1, loading: false, error: "", gen: 0, ran: "" },
   // 2-B
   statuses: {}, // userId -> { code, text } 수동 상태
-  prefs: { favorites: [], muted: [], dnd: { enabled: false, from: "18:00", to: "09:00", weekends: true } },
+  // 3단계 필드는 normalizePrefs가 채운다(여기는 첫 응답 전 값).
+  prefs: {
+    favorites: [], muted: [], dnd: { enabled: false, from: "18:00", to: "09:00", weekends: true },
+    notify: { preview: "full", sound: "default", flash: true, snoozeUntil: null, replyBypassMute: true }, locked: [],
+  },
   scheduled: [],
   schedOpen: false,
   starredOpen: false,
@@ -492,10 +530,30 @@ function inlineUrl(url) {
   return url + (url.includes("?") ? "&" : "?") + "inline=1";
 }
 
+const shownImages = new Set(); // 사진 자동 표시를 껐을 때 "사진 보기"로 연 사진
+
 function fileCard(file, { onOpen = null } = {}) {
   const url = safeFileUrl(file.url);
   const name = file.name || "이름 없음";
   const size = formatSize(file.size);
+  if (url && isImage(name, file.type) && state.prefs?.chat?.autoShowImages === false && !shownImages.has(url)) {
+    const hold = el("button", "thumb hold");
+    hold.type = "button";
+    hold.setAttribute("aria-label", `${name} 사진 보기${size ? `, ${size}` : ""}`);
+    const face = el("span", "hold-face");
+    face.append(iconUse("ico-eye"), el("b", "", "사진 보기"));
+    const caption = el("span", "cap");
+    caption.append(el("span", "", name));
+    if (size) caption.append(el("small", "", size));
+    hold.append(face, caption);
+    hold.addEventListener("click", () => {
+      shownImages.add(url);
+      const shown = fileCard(file, { onOpen });
+      hold.replaceWith(shown);
+      shown.focus?.();
+    });
+    return hold;
+  }
   if (url && isImage(name, file.type)) {
     const link = el(onOpen ? "button" : "a", "thumb");
     if (onOpen) {
@@ -606,6 +664,8 @@ function marksFor(message) {
     return { words: wordsOf(inSearch.query), markClass: current ? "k2 cur" : "k2" };
   }
   if (state.jump?.id === message.id && state.jump.words?.length) return { words: state.jump.words, markClass: "k1" };
+  // N4: 서버가 키워드가 들었다고 표시한 메시지(alerted)는 내 키워드 목록으로 강조한다.
+  if (message.alerted && keywordState.list.length) return { words: keywordState.list, markClass: "kwh" };
   return { words: [], markClass: "" };
 }
 
@@ -649,6 +709,12 @@ function messageRow(message, { mine, grouped, who, kindLabel }) {
   } else if (hasText || !files.length || message.replyTo) {
     const bubble = el("div", "bubble");
     if (mentioned) bubble.classList.add("mention");
+    if (message.urgent) {
+      bubble.classList.add("urgent");
+      const tag = el("span", "urg");
+      tag.append(iconUse("ico-warn"), "중요");
+      bubble.append(tag);
+    }
     if (state.compose?.mode === "edit" && state.compose.message.id === message.id) bubble.classList.add("editing");
     if (message.replyTo && message.replyTo.id) bubble.append(quoteButton(message.replyTo));
     const { words, markClass } = marksFor(message);
@@ -1063,7 +1129,7 @@ function matchesQuery(...texts) {
   return texts.some((text) => (text || "").toLowerCase().includes(query));
 }
 
-function roomButton({ avatarNode, name, sub, num, tag, status, preview, unix, unread, mention, muted, current, onClick, label, title }) {
+function roomButton({ avatarNode, name, sub, num, tag, status, preview, unix, unread, mention, muted, current, onClick, label, title, urgent = false }) {
   const button = el("button", "room");
   button.type = "button";
   if (current) button.setAttribute("aria-current", "true");
@@ -1074,6 +1140,7 @@ function roomButton({ avatarNode, name, sub, num, tag, status, preview, unix, un
       if (muted) parts.push("알림 꺼짐");
       if (unread > 0) parts.push(`안 읽은 메시지 ${unread > 99 ? "99개 이상" : `${unread}개`}`);
       if (unread > 0 && mention) parts.push("나를 멘션함");
+      if (unread > 0 && urgent) parts.push("중요 메시지");
       if (preview) parts.push(preview);
       if (unix) parts.push(formatListTime(unix));
     }
@@ -1096,7 +1163,10 @@ function roomButton({ avatarNode, name, sub, num, tag, status, preview, unix, un
   if (tag) top.append(el("span", "tag-dept", tag));
   if (status) top.append(status);
   if (sub) top.append(el("em", "", sub));
-  text.append(top, el("p", "", preview));
+  const line = el("p", "");
+  if (urgent && unread > 0) line.append(el("span", "urg-tag", "중요"));
+  line.append(preview || "");
+  text.append(top, line);
   const meta = el("span", "meta");
   if (unix) {
     const time = el("time", "", formatListTime(unix));
@@ -1130,7 +1200,7 @@ function renderTalk() {
   list.replaceChildren();
   updateUnreadBadges();
   if (state.directoryError || state.notesError) {
-    list.append(errorState(state.notesError || state.directoryError, () => loadDirectory()));
+    list.append(errorState(state.notesError || state.directoryError, () => reloadAll()));
     return;
   }
   if (state.directoryLoading && state.people.length === 0) {
@@ -1141,16 +1211,17 @@ function renderTalk() {
   const filter = state.talkFilter;
   const showGeneral = (filter === "all" || filter === "group" || (filter === "unread" && state.generalUnread > 0))
     && matchesQuery(GENERAL_NAME, "전체", "채널");
+  const byName = state.prefs?.chat?.roomSort === "name";
   const allGroups = filter === "dm" ? [] : state.groups
     .filter((group) => filter !== "unread" || groupUnread(group.groupId) > 0)
     .filter((group) => matchesQuery(group.name, groupMemberNames(group), group.dept ? "부서" : ""))
-    .sort((a, b) => (latestGroup(b.groupId)?.id || 0) - (latestGroup(a.groupId)?.id || 0) || (a.name || "").localeCompare(b.name || "", "ko"));
+    .sort((a, b) => (byName ? 0 : (latestGroup(b.groupId)?.id || 0) - (latestGroup(a.groupId)?.id || 0)) || (a.name || "").localeCompare(b.name || "", "ko"));
   const depts = allGroups.filter((group) => group.dept);
   const groups = allGroups.filter((group) => !group.dept);
   const people = filter === "group" ? [] : state.people
     .filter((person) => filter !== "unread" || unreadCount(person.userId) > 0)
     .filter((person) => matchesQuery(person.fullName, personTitle(person)))
-    .sort((a, b) => (latestDm(b.userId)?.timestamp || 0) - (latestDm(a.userId)?.timestamp || 0) || a.fullName.localeCompare(b.fullName, "ko"));
+    .sort((a, b) => (byName ? 0 : (latestDm(b.userId)?.timestamp || 0) - (latestDm(a.userId)?.timestamp || 0)) || a.fullName.localeCompare(b.fullName, "ko"));
 
   state.search.roomCount = (showGeneral ? 1 : 0) + allGroups.length + people.length;
   if (!showGeneral && allGroups.length === 0 && people.length === 0) {
@@ -1168,7 +1239,7 @@ function renderTalk() {
   if (showGeneral) {
     const last = state.generalLast;
     rows.push({
-      key: "general", section: "pinned", unix: last?.timestamp || 0,
+      key: "general", section: "pinned", unix: last?.timestamp || 0, title: GENERAL_NAME,
       build: () => roomButton({
         avatarNode: groupAvatar(),
         name: GENERAL_NAME,
@@ -1177,6 +1248,7 @@ function renderTalk() {
         unix: last?.timestamp,
         unread: state.generalUnread,
         mention: state.generalMention,
+        urgent: Boolean(last?.urgent && last.senderId !== state.me?.userId),
         muted: isMuted("general"),
         title: isMuted("general") ? "전체 채널 · 알림 꺼짐" : "",
         current: state.view === "general",
@@ -1188,7 +1260,7 @@ function renderTalk() {
     const key = `group:${group.groupId}`;
     const last = latestGroup(group.groupId);
     rows.push({
-      key, section: group.dept ? "dept" : "group", unix: last?.timestamp || 0,
+      key, section: group.dept ? "dept" : "group", unix: last?.timestamp || 0, title: group.name || "",
       build: () => {
         const count = (group.memberIds || []).length;
         const who = last ? (last.senderId === state.me?.userId ? "나" : last.senderName) : "";
@@ -1204,6 +1276,7 @@ function renderTalk() {
           unix: last?.timestamp,
           unread: groupUnread(group.groupId),
           mention: groupMention(group.groupId),
+          urgent: Boolean(last?.urgent && last.senderId !== state.me?.userId),
           muted: isMuted(key),
           current: viewingGroup(group.groupId),
           onClick: () => setView("group", group),
@@ -1215,7 +1288,7 @@ function renderTalk() {
     const key = `dm:${person.userId}`;
     const last = latestDm(person.userId);
     rows.push({
-      key, section: "dm", unix: last?.timestamp || 0,
+      key, section: "dm", unix: last?.timestamp || 0, title: person.fullName || "",
       build: () => {
         const unread = unreadCount(person.userId);
         const line = manualStatus(person.userId)?.text || "";
@@ -1229,6 +1302,7 @@ function renderTalk() {
           unix: last?.timestamp,
           unread,
           mention: dmMention(person.userId),
+          urgent: Boolean(last?.urgent && last.senderId !== state.me?.userId),
           muted: isMuted(key),
           current: state.view === "dm" && state.selectedUser?.userId === person.userId,
           onClick: () => openTalk(person),
@@ -1237,7 +1311,8 @@ function renderTalk() {
       },
     });
   }
-  const favorites = rows.filter((row) => isFavorite(row.key)).sort((a, b) => b.unix - a.unix);
+  const favorites = rows.filter((row) => isFavorite(row.key))
+    .sort((a, b) => (byName ? a.title.localeCompare(b.title, "ko") : b.unix - a.unix));
   if (favorites.length) {
     const sec = el("div", "sec");
     const star = iconUse("ico-star");
@@ -1316,7 +1391,7 @@ function renderStaff() {
   if (!list) return;
   list.replaceChildren();
   if (state.directoryError) {
-    list.append(errorState(state.directoryError, () => loadDirectory()));
+    list.append(errorState(state.directoryError, () => reloadAll()));
     return;
   }
   if (state.directoryLoading && state.people.length === 0) {
@@ -1485,10 +1560,48 @@ function viewParams() {
   return params;
 }
 
+/* N7: 지금 대화방이 중요 메시지 쓰기 상태인가 */
+function urgentMode() {
+  return Boolean(state.urgent && state.urgent.key === convKey() && state.compose?.mode !== "edit");
+}
+
+/* 전체 대화방은 관리자만 중요 메시지를 보낼 수 있다(계약 N7). */
+function canSendUrgent() {
+  return state.view !== "general" || Boolean(state.me?.isAdmin);
+}
+
+function setUrgent(on, { focus = true } = {}) {
+  state.urgent = on ? { key: convKey(), error: "" } : null;
+  updateComposer();
+  if (focus) $("#composer-input")?.focus();
+}
+
+function renderUrgent() {
+  const on = urgentMode();
+  $("#composer").classList.toggle("urgent", on);
+  const ctx = $("#urgent-ctx");
+  ctx.hidden = !on;
+  ctx.classList.toggle("err", Boolean(on && state.urgent.error));
+  // 남은 횟수는 서버가 알려 주지 않으므로 그 문장은 뺀다(계약 "구현 중 확정된 변경").
+  $("#urgent-ctx-text").textContent = on && state.urgent.error ? state.urgent.error : "방해 금지·알림 끄기와 관계없이 소리와 함께 알립니다.";
+  // 보내기 메뉴의 중요 메시지 항목
+  const item = $("#send-urgent");
+  const editing = state.compose?.mode === "edit";
+  item.hidden = editing;
+  $("#send-urgent-sep").hidden = editing;
+  item.disabled = !on && !canSendUrgent();
+  $("#send-urgent-why").hidden = editing || on || canSendUrgent();
+  $("#send-urgent-label").textContent = on ? "보통 메시지로 보내기" : "중요 메시지로 보내기";
+  $("#send-urgent-sub").textContent = on ? "중요 표시를 끕니다" : "방해 금지 중에도 소리와 함께 알립니다";
+  // 예약 메시지는 중요 메시지로 보낼 수 없다(서버 400).
+  $("#send-later").disabled = on;
+}
+
 function updateComposer() {
   const button = $("#send-button");
   const input = $("#composer-input");
   if (!button || !input) return;
+  renderUrgent();
   const hasText = Boolean(input.value.trim());
   const sending = state.sendingKeys.has(convKey());
   if (state.compose?.mode === "edit") {
@@ -1500,7 +1613,8 @@ function updateComposer() {
     return;
   }
   button.disabled = sending || composerUploader.busy() || (!hasText && !composerUploader.ready().length);
-  button.querySelector("span").textContent = sending ? "보내는 중…" : "전송";
+  const narrow = window.matchMedia?.("(max-width: 480px)").matches;
+  button.querySelector("span").textContent = sending ? (narrow ? "보내는 중" : "보내는 중…") : urgentMode() ? (narrow ? "중요" : "중요 전송") : "전송";
   button.title = composerUploader.busy() ? "올리는 중인 파일이 끝나면 보낼 수 있어요" : "";
   $("#send-error").textContent = state.sendErrors[convKey()] || "";
 }
@@ -1785,13 +1899,13 @@ function clipBody(text) {
 
 /* 서버가 쪽지를 messages에서 빼고 notes 배열로만 보내므로(11/16 백엔드), 쪽지 알림은 새로 생긴 쪽지 기록으로 낸다. */
 function notifyNewNotes(previousIds, notes) {
-  if (dndActive()) return;
+  if (dndActive() || snoozed()) return;
   const fresh = notes.filter((note) => note && !previousIds.has(note.messageId) && note.senderId !== state.me?.userId);
   for (const note of fresh.slice(-5)) {
     const open = state.view === "notes" && state.selectedNotePeer?.userId === note.senderId;
     if (open && !document.hidden && document.hasFocus()) continue;
     const name = personById(note.senderId)?.fullName || "새 쪽지";
-    notify({ title: `쪽지 · ${name}`, body: "새 쪽지가 왔습니다.", target: `#/notes/${note.senderId}` });
+    sendNotify({ title: `쪽지 · ${name}`, body: "새 쪽지가 왔습니다.", target: `#/notes/${note.senderId}` });
   }
 }
 
@@ -1816,15 +1930,55 @@ function notifyIncoming(messages) {
     }
     const attention = !attentive(); // 잠긴 동안은 보고 있지 않은 것으로 친다
     if (open && !attention) continue;
-    // 나를 멘션한 메시지는 대화방 알림을 꺼도(2-B) 알린다.
-    if (message.mentionedMe) title = `@ ${title}`;
-    else if (isMuted(messageKey(message)) || dndActive()) continue;
-    if (state.locked) {
-      notify({ title: message.senderName || "새 메시지", body: "새 메시지", target });
-      continue;
+    const urgent = message.urgent === true;
+    if (urgent) {
+      // 중요 메시지(N7)는 방해 금지·알림 끄기·잠시 끄기와 관계없이 알린다. 미리 보기 설정은 따른다.
+      title = `중요 · ${title}`;
+    } else {
+      if (snoozed()) continue; // 잠시 끄기(N3): 멘션도 알리지 않는다
+      if (message.mentionedMe) {
+        // 나를 멘션한 메시지는 대화방 알림을 꺼도(2-B) 알린다.
+        title = `@ ${title}`;
+      } else {
+        // 키워드(N4)·내 글에 단 답장은 알림 끈 방에서도 알리지만, 방해 금지 중에는 알리지 않는다.
+        const bypassMute = message.alerted === true || (state.prefs.notify.replyBypassMute && isReplyToMe(message));
+        if ((isMuted(messageKey(message)) && !bypassMute) || dndActive()) continue;
+      }
     }
-    notify({ title, body: clipBody(previewText(message) || "새 메시지"), target });
+    sendNotify({ title, body: clipBody(previewText(message) || "새 메시지"), target, sender: message.senderName, urgent });
   }
+}
+
+/* 내 메시지에 단 답장인가. 서버가 replyTo.senderId를 주면 그것을, 아니면 불러온 원문을 본다. */
+function isReplyToMe(message) {
+  const reply = message?.replyTo;
+  if (!reply?.id || !state.me) return false;
+  if (reply.senderId !== undefined && reply.senderId !== null) return reply.senderId === state.me.userId;
+  return state.messages.some((item) => item.id === reply.id && item.senderId === state.me.userId);
+}
+
+/* N1 미리 보기: 기관 정책(D1)이 숨김을 강제하면 그것을 따른다. */
+function previewMode() {
+  if (state.me?.policy?.forcePreviewHidden) return "none";
+  return state.prefs.notify.preview;
+}
+
+/* 모든 알림은 여기를 거친다. 미리 보기·소리·깜박임 설정을 적용한다(p3-contract N1·N2·N5). */
+function sendNotify({ title, body, target, sender = "", urgent = false }) {
+  const settings = state.prefs.notify;
+  let mode = previewMode();
+  // 잠긴 동안은 내용을 보이지 않는다(2-C).
+  if (state.locked && mode === "full") mode = "name";
+  let shownTitle = title;
+  let shownBody = body;
+  if (mode === "name") {
+    if (state.locked && sender) shownTitle = urgent ? `중요 · ${sender}` : sender;
+    shownBody = "새 메시지";
+  } else if (mode === "none") {
+    shownTitle = urgent ? "상상톡 · 중요" : "상상톡";
+    shownBody = "새 메시지가 왔습니다";
+  }
+  notify({ title: shownTitle, body: shownBody, target, sound: settings.sound, flash: settings.flash, urgent });
 }
 
 async function pollLoop(token) {
@@ -1856,6 +2010,20 @@ async function pollLoop(token) {
       if (incoming.length) clearTypingFor(incoming);
       if (incoming.some((message) => message.senderId === state.me?.userId) && state.scheduled.length) scheduleScheduledReload();
       if (data.noticesChanged) refreshOpenConversation({ force: true });
+      if (data.prefsChanged) {
+        if (settingsSaving) prefsReloadPending = true;
+        else loadPrefs();
+      }
+      if (data.policyChanged) refreshPolicy();
+      if (data.activity && typeof data.activity === "object") {
+        setActivityUnseen(data.activity.unseen, data.activity.unseenByKind);
+        if (!$("#center").hidden && !activity.loading) {
+          if (activity.loadedOlder) {
+            activity.fresh = true;
+            renderCenter();
+          } else loadActivity();
+        }
+      }
       const usable = data.notesError ? incoming.filter((message) => message.kind !== "dm") : incoming;
       absorbDmPreviews(usable);
       absorbGroupMessages(usable);
@@ -1925,7 +2093,9 @@ function applyNotesError(message) {
 let notesTimer = null;
 function startNotesWatch() {
   if (notesTimer) return;
-  notesTimer = setInterval(() => { refreshNoteIndex(); }, 1500);
+  notesTimer = setInterval(() => {
+    if (!state.locked && !state.pwForced) refreshNoteIndex();
+  }, 1500);
   refreshNoteIndex();
 }
 function stopNotesWatch() {
@@ -1933,7 +2103,7 @@ function stopNotesWatch() {
   notesTimer = null;
 }
 async function refreshNoteIndex() {
-  if (!state.me) return;
+  if (!state.me || state.locked || state.pwForced) return;
   const session = state.sessionGen;
   try {
     const response = await fetch("/api/notes");
@@ -1986,7 +2156,9 @@ let presenceTimer = 0;
 let lastInputAt = Date.now();
 
 function currentActivity() {
-  return Date.now() - lastInputAt >= IDLE_AFTER_MS ? "idle" : "active";
+  const minutes = state.prefs?.presence?.awayMinutes;
+  const after = Number.isInteger(minutes) && minutes > 0 ? minutes * 60 * 1000 : IDLE_AFTER_MS;
+  return Date.now() - lastInputAt >= after ? "idle" : "active";
 }
 
 async function sendPresence() {
@@ -2377,6 +2549,8 @@ function showLogin(message) {
   window.clearTimeout(searchTimer);
   window.clearTimeout(inSearchTimer);
   window.clearTimeout(lockSyncTimer);
+  window.clearInterval(snoozeTimer);
+  snoozeTimer = 0;
   hashDeferred = false;
   blockedStartHash = "";
   closeNewMenu();
@@ -2389,7 +2563,9 @@ function showLogin(message) {
   resetListSearch();
   stopReceipts();
   closeStatusPop();
-  for (const id of ["#viewer", "#sched-dialog"]) {
+  state.urgent = null;
+  closeAckPop();
+  for (const id of ["#viewer", "#sched-dialog", "#settings", "#notice-dialog"]) {
     const dialog = $(id);
     if (dialog?.open) dialog.close();
   }
@@ -2402,6 +2578,26 @@ function showLogin(message) {
   typingState.clear();
   state.statuses = {};
   state.prefs = normalizePrefs({});
+  settingsSeq += 1;
+  prefsReloadPending = false;
+  sessionList.items = null;
+  sessionList.error = "";
+  privacyState.data = null;
+  Object.assign(appSettings, { autostart: null, closeAction: null, hotkey: null, captureBlock: null, capturing: false, hotkeyInactiveShown: false });
+  shownImages.clear();
+  window.clearTimeout(snoozeEndTimer);
+  closeSnoozeMenu();
+  closeCenter();
+  activity.items = [];
+  activity.hasOlder = false;
+  activity.loaded = false;
+  activity.error = "";
+  activity.unseen = 0;
+  activity.byKind = null;
+  keywordState.list = [];
+  keywordState.available = false;
+  keywordState.gen += 1;
+  renderSnooze();
   state.scheduled = [];
   state.starredOpen = false;
   state.starred = { messages: [], hasOlder: false, loading: false, error: "", gen: state.starred.gen + 1 };
@@ -2459,8 +2655,7 @@ async function showChat() {
   state.noteStatus = "";
   state.view = "";
   $("#me-name").textContent = state.me.fullName || state.me.email;
-  const pic = $("#me-avatar");
-  pic.classList.add("turtle");
+  renderMyAvatar();
   setLive("연결하는 중…", false);
   $("#send-error").textContent = "";
   loadReadState();
@@ -2470,14 +2665,20 @@ async function showChat() {
   startNotesWatch();
   startReceipts();
   loadPrefs();
+  loadActivityCount();
+  loadKeywords();
   loadScheduled();
   lastInputAt = Date.now();
   startLockWatch();
+  state.startBlocked = Boolean(state.me?.mustChangePassword || state.me?.locked);
   if (state.me?.mustChangePassword) openPasswordChange({ forced: true });
   if (state.me?.locked) lockScreen({ fromServer: true });
   else {
     try {
-      if (localStorage.getItem(lockKey()) === "1") lockScreen();
+      if (localStorage.getItem(lockKey()) === "1") {
+        state.startBlocked = true;
+        lockScreen();
+      }
     } catch {
       // 저장소를 못 쓰면 잠금 기록을 이어 가지 않는다.
     }
@@ -2495,13 +2696,25 @@ async function showChat() {
   if (!routeTo(hash)) syncHash();
 }
 
+/* 처음 로드와 같은 다시 읽기(잠금·비밀번호 강제가 풀린 뒤, "다시 시도"). */
+async function reloadAll() {
+  if (!state.me || state.locked || state.pwForced) return;
+  state.startBlocked = false;
+  refreshNoteIndex();
+  refreshPolicy(); // 세션 policy·limits와 prefs
+  loadActivityCount();
+  loadKeywords();
+  loadScheduled();
+  await loadDirectory();
+}
+
 let blockedStartHash = "";
 /* 막혀 있던 처음 주소: 직원·그룹 목록을 다시 읽은 뒤 연다. */
 async function openBlockedStartHash() {
   const hash = blockedStartHash;
   if (!hash || state.pwForced || state.locked) return false;
   blockedStartHash = "";
-  await loadDirectory();
+  await reloadAll();
   if (state.me && !routeTo(hash)) syncHash();
   return true;
 }
@@ -2527,13 +2740,13 @@ function uploadLimits() {
   const limits = state.me?.limits || {};
   const mb = Number.isFinite(limits.maxUploadMb) && limits.maxUploadMb > 0 ? limits.maxUploadMb : MAX_UPLOAD_MB;
   const blocked = Array.isArray(limits.blockedExtensions)
-    ? new Set(limits.blockedExtensions.map((ext) => String(ext).replace(/^./, "").toLowerCase()).filter(Boolean))
+    ? new Set(limits.blockedExtensions.map((ext) => String(ext).replace(/^\./, "").toLowerCase()).filter(Boolean))
     : BLOCKED_EXT;
   return { mb, blocked };
 }
 const tooBigText = () => `파일이 너무 큽니다. 파일당 ${uploadLimits().mb}MB까지 보낼 수 있어요.`;
 const UPLOAD_NETWORK = "올리지 못했습니다. 연결을 확인하고 다시 시도하세요.";
-const blockedText = (name) => `보낼 수 없는 형식입니다(.${extOf(name) || "?"}).`;
+const blockedText = (name) => `기관 정책으로 막힌 파일 형식입니다(.${extOf(name) || "?"}).`;
 
 function precheck(file) {
   const { mb, blocked } = uploadLimits();
@@ -3269,7 +3482,10 @@ function renderNotice() {
   const show = Boolean(notice) && isTalkView() && !state.noticeHidden.has(noticeId(notice));
   bar.hidden = !show;
   updateRoomMenu();
-  if (!show) return;
+  if (!show) {
+    closeAckPop();
+    return;
+  }
   const message = notice.message;
   const line = previewText(message) || "(내용 없음)";
   $("#notice-text").textContent = line;
@@ -3277,6 +3493,27 @@ function renderNotice() {
   $("#notice-meta").textContent = `${notice.setByName || "알 수 없음"} 님이 ${notice.setAt ? formatStamp(notice.setAt) : ""}에 등록`;
   $("#notice-clear").hidden = !canChangeNotice();
   $("#notice-error").textContent = "";
+  // N8: 확인 요청
+  const asks = Boolean(notice.ackRequired);
+  $("#notice-ack-tag").hidden = !asks;
+  const canView = asks && Boolean(notice.canViewAcks);
+  // 관리자는 확인 대상이면서 목록도 볼 수 있다: 그때는 "확인"과 "확인 N/M명"을 함께 둔다.
+  $("#notice-ack").hidden = !asks || !notice.ackTarget || Boolean(notice.ackedByMe);
+  $("#notice-acked").hidden = !asks || !notice.ackedByMe;
+  $("#notice-acks").hidden = !canView;
+  if (canView) {
+    const total = Number(notice.ackTotal) || 0;
+    const count = Number(notice.ackCount) || 0;
+    const text = $("#notice-acks-text");
+    text.replaceChildren("확인 ", el("b", "", String(count)), `/${total}명`);
+    $("#notice-acks").setAttribute("aria-label", `확인 ${count}명, 전체 ${total}명 · 확인 현황 보기`);
+    const signature = `${count}/${total}`;
+    if (ackPop && ackPop.key === liveKey() && ackPop.signature !== signature) {
+      ackPop.signature = signature;
+      loadAcks();
+    }
+  }
+  if (ackPop && (!canView || ackPop.key !== liveKey())) closeAckPop();
   bar.classList.toggle("open", state.noticeOpen);
   for (const id of ["#notice-text", "#notice-toggle"]) $(id).setAttribute("aria-expanded", String(state.noticeOpen));
   $("#notice-toggle").setAttribute("aria-label", state.noticeOpen ? "공지 접기" : "공지 펼치기");
@@ -3294,24 +3531,205 @@ function noticeTarget() {
   return target;
 }
 
-async function setNoticeFrom(messageId) {
-  const key = liveKey();
-  if (state.notice && state.notice.message.id !== messageId) {
-    const ok = await askConfirm({ title: "공지를 바꿀까요?", text: "지금 공지 대신 이 메시지를 공지로 올립니다.", confirm: "바꾸기", cancel: "취소" });
-    if (!ok || key !== liveKey()) return;
+let noticeDraft = null; // { key, messageId }
+
+function roomTitle() {
+  if (state.view === "dm") return state.selectedUser?.fullName || "이 대화방";
+  if (state.view === "group") return state.selectedGroup?.name || "이 대화방";
+  return GENERAL_NAME;
+}
+
+function setNoticeFrom(messageId) {
+  const message = state.messages.find((item) => item.id === messageId);
+  if (!message) return;
+  noticeDraft = { key: liveKey(), messageId };
+  const replacing = Boolean(state.notice && state.notice.message.id !== messageId);
+  $("#notice-dlg-sub").textContent = `${roomTitle()} 위쪽에 고정됩니다.${replacing ? " 지금 공지는 바뀝니다." : ""}`;
+  $("#notice-dlg-preview").textContent = (message.content || "").trim() || previewText(message) || "(내용 없음)";
+  $("#notice-dlg-ack").checked = false; // 기본 꺼짐(디자이너 확정)
+  $("#notice-dlg-error").textContent = "";
+  $("#notice-dlg-submit").disabled = false;
+  $("#notice-dialog").showModal();
+  $("#notice-dlg-ack").focus();
+}
+
+$("#notice-dlg-close").addEventListener("click", () => $("#notice-dialog").close());
+$("#notice-dlg-cancel").addEventListener("click", () => $("#notice-dialog").close());
+$("#notice-dialog").addEventListener("close", () => {
+  noticeDraft = null;
+  if (state.me && isTalkView() && !state.locked) $("#composer-input")?.focus();
+});
+$("#notice-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const draft = noticeDraft;
+  if (!draft || draft.key !== liveKey()) {
+    $("#notice-dialog").close();
+    return;
   }
+  const submit = $("#notice-dlg-submit");
+  submit.disabled = true;
+  $("#notice-dlg-error").textContent = "";
+  const body = { ...noticeTarget(), messageId: draft.messageId };
+  if ($("#notice-dlg-ack").checked) body.ackRequired = true;
   try {
-    const data = await api("POST", "/api/notices", { ...noticeTarget(), messageId });
-    if (key !== liveKey()) return;
+    const data = await api("POST", "/api/notices", body);
+    if (draft !== noticeDraft) return;
+    $("#notice-dialog").close();
+    if (draft.key !== liveKey()) return;
     if (data.notice) state.noticeHidden.delete(noticeId(data.notice));
     setNotice(data.notice || null);
-    announce("공지로 등록했습니다.");
+    announce(body.ackRequired ? "확인 요청 공지로 등록했습니다." : "공지로 등록했습니다.");
+  } catch (error) {
+    if (error.status === 401 || draft !== noticeDraft) return;
+    $("#notice-dlg-error").textContent = error.message || "공지로 등록하지 못했습니다.";
+    submit.disabled = false;
+  }
+});
+
+/* 받는 사람: 확인 → 확인함. 등록한 사람·관리자: 확인 N/M명 ▾ → 현황 */
+async function ackNotice() {
+  const key = liveKey();
+  const button = $("#notice-ack");
+  button.disabled = true;
+  $("#notice-error").textContent = "";
+  try {
+    const data = await api("POST", "/api/notices/ack", noticeTarget());
+    if (key !== liveKey()) return;
+    if (data.notice) setNotice(data.notice);
+    else if (state.notice) setNotice({ ...state.notice, ackedByMe: true });
+    announce("공지를 확인했습니다.");
+    const acked = $("#notice-acked");
+    (acked.hidden ? $("#notice-acks") : acked).focus?.();
   } catch (error) {
     if (error.status === 401 || key !== liveKey()) return;
-    state.sendErrors[convKey()] = error.message || "공지로 등록하지 못했습니다.";
-    updateComposer();
+    $("#notice-error").textContent = error.message || "확인하지 못했습니다.";
+    state.noticeOpen = true;
+    renderNotice();
+  } finally {
+    button.disabled = false;
   }
 }
+
+let ackPop = null; // { node, tab, data, error, key }
+
+function closeAckPop({ focus = false } = {}) {
+  if (!ackPop) return;
+  ackPop.node.remove();
+  ackPop = null;
+  $("#notice-acks").setAttribute("aria-expanded", "false");
+  if (focus) $("#notice-acks").focus();
+}
+
+function openAckPop() {
+  if (ackPop) {
+    closeAckPop({ focus: true });
+    return;
+  }
+  const node = el("div", "readers ack-pop");
+  node.setAttribute("role", "dialog");
+  node.setAttribute("aria-label", "공지 확인 현황");
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeAckPop({ focus: true });
+    }
+  });
+  ackPop = { node, tab: "acked", data: null, error: "", key: liveKey(), signature: `${Number(state.notice?.ackCount) || 0}/${Number(state.notice?.ackTotal) || 0}` };
+  $("#notice-bar").append(node);
+  $("#notice-acks").setAttribute("aria-expanded", "true");
+  renderAckPop();
+  node.querySelector("[role=tab][aria-selected=true]")?.focus();
+  loadAcks();
+}
+
+async function loadAcks() {
+  const pop = ackPop;
+  if (!pop) return;
+  const params = new URLSearchParams(Object.entries(noticeTarget()).filter(([, value]) => value !== undefined && value !== null).map(([name, value]) => [name, String(value)]));
+  try {
+    const data = await api("GET", `/api/notices/acks?${params}`);
+    if (ackPop !== pop) return;
+    const list = (value) => (Array.isArray(value) ? value.filter((item) => item && item.userId !== undefined) : []);
+    pop.data = { acked: list(data.acked), pending: list(data.pending) };
+    pop.error = "";
+  } catch (error) {
+    if (error.status === 401 || ackPop !== pop) return;
+    pop.error = error.message || "확인 현황을 가져오지 못했습니다.";
+  }
+  const focused = pop.node.contains(document.activeElement) ? document.activeElement.dataset.tab || "" : "";
+  renderAckPop();
+  if (focused) pop.node.querySelector(`[data-tab="${focused}"]`)?.focus();
+}
+
+function renderAckPop() {
+  const pop = ackPop;
+  if (!pop) return;
+  const node = pop.node;
+  node.replaceChildren();
+  const head = el("h3", "", "공지 확인 현황");
+  const close = el("button", "icon-btn");
+  close.type = "button";
+  close.setAttribute("aria-label", "닫기");
+  close.append(iconUse("ico-x"));
+  close.addEventListener("click", () => closeAckPop({ focus: true }));
+  head.append(close);
+  const seg = el("div", "seg");
+  seg.setAttribute("role", "tablist");
+  const counts = { acked: pop.data?.acked.length, pending: pop.data?.pending.length };
+  for (const [tab, label] of [["acked", "확인"], ["pending", "미확인"]]) {
+    const button = el("button", "", label);
+    button.type = "button";
+    button.dataset.tab = tab;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(pop.tab === tab));
+    button.tabIndex = pop.tab === tab ? 0 : -1;
+    if (counts[tab] !== undefined) button.append(el("span", tab === "acked" ? "n ok" : "n", String(counts[tab])));
+    button.addEventListener("click", () => {
+      pop.tab = tab;
+      renderAckPop();
+      node.querySelector(`[data-tab="${tab}"]`)?.focus();
+    });
+    seg.append(button);
+  }
+  seg.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    pop.tab = pop.tab === "acked" ? "pending" : "acked";
+    renderAckPop();
+    node.querySelector(`[data-tab="${pop.tab}"]`)?.focus();
+  });
+  const list = el("div", "plist");
+  list.setAttribute("role", "tabpanel");
+  if (pop.error) list.append(el("p", "none", pop.error));
+  else if (!pop.data) list.append(el("p", "none", "불러오는 중…"));
+  else {
+    const rows = pop.tab === "acked" ? pop.data.acked : pop.data.pending;
+    if (!rows.length) list.append(el("p", "none", pop.tab === "acked" ? "아직 아무도 확인하지 않았습니다." : "모두 확인했습니다."));
+    for (const row of rows) {
+      const person = personById(row.userId);
+      const line = el("div", "pl");
+      const who = el("span");
+      const mine = row.userId === state.me?.userId;
+      who.append(el("b", "", row.name || person?.fullName || "알 수 없음"), el("em", "", mine ? mySubtitle() || (person ? personTitle(person) : "") : person ? personTitle(person) : ""));
+      const at = Number(row.at);
+      const tail = pop.tab === "acked"
+        ? el("em", "", Number.isFinite(at) && at > 0 ? formatListTime(at) : "")
+        : el("span", "pend", "미확인");
+      line.append(avatar(person || { fullName: row.name }, { size: "xs" }), who, tail);
+      list.append(line);
+    }
+  }
+  node.append(head, seg, list, el("div", "foot", "등록할 때 대화방 인원 기준(등록한 사람 제외). 공지를 해제해도 확인 기록은 감사 로그에 남습니다."));
+}
+
+$("#notice-ack").addEventListener("click", ackNotice);
+$("#notice-acks").addEventListener("click", (event) => {
+  event.stopPropagation();
+  openAckPop();
+});
+document.addEventListener("click", (event) => {
+  if (!ackPop || !event.target.isConnected || event.target.closest?.(".ack-pop, #notice-acks")) return;
+  closeAckPop();
+});
 
 async function clearNotice() {
   const key = liveKey();
@@ -4041,7 +4459,7 @@ function renderCompose() {
   const hint = $("#composer-hint");
   if (!compose) {
     if (input.dataset.placeholder) input.placeholder = input.dataset.placeholder;
-    hint.textContent = "끌어다 놓거나 붙여넣어도 됩니다 · Enter 전송";
+    hint.textContent = `끌어다 놓거나 붙여넣어도 됩니다 · ${sendKeyLabel()} 전송`;
     $("#composer-attach").disabled = false;
     return;
   }
@@ -4052,7 +4470,7 @@ function renderCompose() {
   $("#compose-ctx-cancel").setAttribute("aria-label", edit ? "수정 취소" : "답장 취소");
   if (!edit) input.placeholder = "답장 입력";
   else if (input.dataset.placeholder) input.placeholder = input.dataset.placeholder;
-  hint.textContent = edit ? "Enter 저장 · Esc 취소" : "Enter 전송 · Esc 답장 취소";
+  hint.textContent = edit ? `${sendKeyLabel()} 저장 · Esc 취소` : `${sendKeyLabel()} 전송 · Esc 답장 취소`;
   $("#composer-attach").disabled = edit;
 }
 
@@ -4545,7 +4963,7 @@ function openStatusPop() {
     return;
   }
   const mine = state.statuses?.[String(state.me.userId)] || { code: "", text: "" };
-  statusDraft = { code: mine.code || "", text: mine.text || "", dnd: { ...DEFAULT_DND, ...(state.prefs?.dnd || {}) } };
+  statusDraft = { code: mine.code || "", text: mine.text || "" };
   $("#sp-error").textContent = "";
   renderStatusPop();
   $("#status-pop").hidden = false;
@@ -4602,12 +5020,7 @@ function renderStatusPop() {
   const text = $("#sp-text");
   if (text.value !== draft.text) text.value = draft.text;
   $("#sp-count").textContent = `${Array.from(draft.text).length}/40`;
-  $("#sp-dnd").setAttribute("aria-checked", String(draft.dnd.enabled));
-  $("#sp-dnd-sum").textContent = dndSummary(draft.dnd);
-  $("#sp-from").value = draft.dnd.from;
-  $("#sp-to").value = draft.dnd.to;
-  $("#sp-weekends").checked = draft.dnd.weekends;
-  for (const id of ["#sp-from", "#sp-to", "#sp-weekends"]) $(id).disabled = !draft.dnd.enabled;
+  $("#sp-dnd-sum").textContent = dndSummary(state.prefs.dnd);
 }
 
 $("#me").addEventListener("click", (event) => {
@@ -4628,22 +5041,9 @@ $("#sp-text").addEventListener("input", (event) => {
   statusDraft.text = event.currentTarget.value;
   $("#sp-count").textContent = `${Array.from(statusDraft.text).length}/40`;
 });
-$("#sp-dnd").addEventListener("click", () => {
-  if (!statusDraft) return;
-  statusDraft.dnd.enabled = !statusDraft.dnd.enabled;
-  renderStatusPop();
-});
-for (const [id, field] of [["#sp-from", "from"], ["#sp-to", "to"]]) {
-  $(id).addEventListener("change", (event) => {
-    if (!statusDraft || !event.currentTarget.value) return;
-    statusDraft.dnd[field] = event.currentTarget.value;
-    $("#sp-dnd-sum").textContent = dndSummary(statusDraft.dnd);
-  });
-}
-$("#sp-weekends").addEventListener("change", (event) => {
-  if (!statusDraft) return;
-  statusDraft.dnd.weekends = event.currentTarget.checked;
-  $("#sp-dnd-sum").textContent = dndSummary(statusDraft.dnd);
+$("#sp-notify-settings").addEventListener("click", () => {
+  closeStatusPop();
+  openSettings("notify");
 });
 $("#sp-cancel").addEventListener("click", () => closeStatusPop({ focus: true }));
 $("#status-pop").addEventListener("keydown", (event) => {
@@ -4664,12 +5064,6 @@ $("#sp-save").addEventListener("click", async () => {
     const data = await api("POST", "/api/status", { code: draft.code, text });
     if (session !== state.sessionGen) return;
     state.statuses = { ...(state.statuses || {}), [String(state.me.userId)]: data.status || { code: draft.code, text } };
-    const before = JSON.stringify(state.prefs?.dnd || DEFAULT_DND);
-    if (JSON.stringify(draft.dnd) !== before) {
-      const prefs = await api("PATCH", "/api/prefs", { dnd: draft.dnd });
-      if (session !== state.sessionGen) return;
-      state.prefs = normalizePrefs(prefs);
-    }
     closeStatusPop({ focus: true });
     renderMyPresence();
     renderList();
@@ -4685,9 +5079,20 @@ $("#sp-save").addEventListener("click", async () => {
 
 /* ── B4·B5 설정: 즐겨찾기·알림 끄기·방해 금지 ── */
 
+const PREVIEW_MODES = ["full", "name", "none"];
+const NOTIFY_SOUNDS = ["default", "im", "mail", "reminder", "none"];
+
+/* 서버가 아직 주지 않는 필드(3단계)는 계약서 기본값으로 채운다. */
 function normalizePrefs(data) {
   const keys = (list) => (Array.isArray(list) ? list.filter((key) => typeof key === "string") : []);
-  const dnd = data?.dnd && typeof data.dnd === "object" ? data.dnd : {};
+  const part = (value) => (value && typeof value === "object" ? value : {});
+  const pick = (value, list, fallback) => (list.includes(value) ? value : fallback);
+  const flag = (value, fallback) => (value === undefined || value === null ? fallback : Boolean(value));
+  const dnd = part(data?.dnd);
+  const notifyPart = part(data?.notify);
+  const display = part(data?.display);
+  const chat = part(data?.chat);
+  const snoozeAt = Date.parse(notifyPart.snoozeUntil || "");
   return {
     favorites: keys(data?.favorites),
     muted: keys(data?.muted),
@@ -4697,7 +5102,48 @@ function normalizePrefs(data) {
       to: /^\d\d:\d\d$/.test(dnd.to) ? dnd.to : DEFAULT_DND.to,
       weekends: dnd.weekends === undefined ? DEFAULT_DND.weekends : Boolean(dnd.weekends),
     },
+    notify: {
+      preview: pick(notifyPart.preview, PREVIEW_MODES, "full"),
+      sound: pick(notifyPart.sound, NOTIFY_SOUNDS, "default"),
+      flash: flag(notifyPart.flash, true),
+      snoozeUntil: Number.isFinite(snoozeAt) ? notifyPart.snoozeUntil : null,
+      replyBypassMute: flag(notifyPart.replyBypassMute, true),
+    },
+    display: {
+      theme: pick(display.theme, ["system", "light", "dark"], "light"),
+      fontSize: pick(display.fontSize, ["small", "normal", "large"], "normal"),
+      density: pick(display.density, ["comfortable", "compact"], "comfortable"),
+    },
+    chat: {
+      enterSends: flag(chat.enterSends, true),
+      autoShowImages: flag(chat.autoShowImages, true),
+      roomSort: pick(chat.roomSort, ["recent", "name"], "recent"),
+    },
+    presence: { awayMinutes: [5, 10, 15, 30, 60].includes(data?.presence?.awayMinutes) ? data.presence.awayMinutes : 10 },
+    lock: { minutes: Number.isInteger(data?.lock?.minutes) ? data.lock.minutes : null },
+    locked: keys(data?.locked), // 관리자 정책으로 고정된 설정(예: "notify.preview")
   };
+}
+
+/* 설정 값을 화면 전체에 적용한다(P2 화면, P3 보내기 키 안내, P4 자동 잠금). */
+function applyPrefs() {
+  applyDisplay(state.prefs.display);
+  renderSendHints();
+  if (state.me && !state.locked) startLockWatch();
+}
+
+/* 관리자 정책이 바뀌었다(D1): 세션의 policy·limits를 다시 읽고 설정도 다시 읽는다(고정 항목이 바뀐다). */
+async function refreshPolicy() {
+  const session = state.sessionGen;
+  try {
+    const data = await api("GET", "/api/session");
+    if (session !== state.sessionGen || !state.me) return;
+    if (data?.policy && typeof data.policy === "object") state.me.policy = data.policy;
+    if (data?.limits && typeof data.limits === "object") state.me.limits = data.limits;
+  } catch {
+    // 다음 이벤트나 새로 고침 때 다시 맞춘다.
+  }
+  await loadPrefs();
 }
 
 async function loadPrefs() {
@@ -4705,9 +5151,17 @@ async function loadPrefs() {
   try {
     const data = await api("GET", "/api/prefs");
     if (session !== state.sessionGen) return;
+    if (settingsSaving) {
+      // 저장 중이면 읽은 값이 바꾸는 중인 값을 덮지 않게, 저장이 끝난 뒤 다시 읽는다.
+      prefsReloadPending = true;
+      return;
+    }
     state.prefs = normalizePrefs(data);
+    applyPrefs();
     renderList();
     updateRoomMenu();
+    renderSnooze();
+    if ($("#settings").open) renderSettings();
   } catch {
     // 설정을 못 읽으면 기본값(즐겨찾기·알림 끄기 없음)으로 쓴다.
   }
@@ -4721,24 +5175,15 @@ function isMuted(key) {
   return state.prefs.muted.includes(key);
 }
 
-async function savePrefs(patch, done) {
-  const previous = state.prefs;
-  const session = state.sessionGen;
-  state.prefs = { ...state.prefs, ...patch };
-  renderList();
-  updateRoomMenu();
-  try {
-    const data = await api("PATCH", "/api/prefs", patch);
-    if (session !== state.sessionGen) return;
-    state.prefs = normalizePrefs(data);
-    if (done) announce(done);
-  } catch (error) {
-    if (error.status === 401 || session !== state.sessionGen) return;
-    state.prefs = previous;
-    state.noteStatus = error.message || "설정을 저장하지 못했습니다.";
-  }
-  renderList();
-  updateRoomMenu();
+/* 대화방 메뉴(즐겨찾기·알림 끄기): 설정 창과 같은 저장 길(순번·병합 규칙)을 쓰고, 오류는 목록에 보인다. */
+function savePrefs(patch, done) {
+  return patchPrefs(patch, {
+    done,
+    onError: (error) => {
+      state.noteStatus = error.message || "설정을 저장하지 못했습니다.";
+      renderList();
+    },
+  });
 }
 
 function toggleListPref(name, key, onText, offText) {
@@ -4746,6 +5191,1733 @@ function toggleListPref(name, key, onText, offText) {
   const next = on ? state.prefs[name].filter((item) => item !== key) : [...state.prefs[name], key];
   savePrefs({ [name]: next }, on ? offText : onText);
 }
+
+/* ── 3단계 S1 설정 창(design/main-screen-v4.html) ── */
+
+const SETTINGS_TABS = ["me", "notify", "display", "chat", "security", "app"];
+const SETTINGS_TITLES = { me: "내 정보", notify: "알림", display: "화면", chat: "대화", security: "보안·개인정보", app: "PC 앱" };
+let settingsTab = "notify";
+let settingsSaving = 0; // 진행 중인 저장 수
+let settingsSeq = 0; // 마지막으로 보낸 저장의 순번(그 응답만 화면에 반영한다)
+let prefsReloadPending = false; // 저장 중에 온 prefsChanged·읽기는 저장이 끝난 뒤 한 번 다시 읽는다
+let settingsReturnFocus = null;
+
+function settingsTabsShown() {
+  return SETTINGS_TABS.filter((tab) => tab !== "app" || isDesktopApp());
+}
+
+function openSettings(tab = settingsTab, { returnFocus = document.activeElement } = {}) {
+  if (!state.me || state.locked || state.pwForced) return;
+  closeStatusPop();
+  closeSnoozeMenu();
+  closeCenter();
+  settingsTab = settingsTabsShown().includes(tab) ? tab : "notify";
+  settingsReturnFocus = returnFocus instanceof HTMLElement ? returnFocus : null;
+  setSaved("");
+  setPicError("");
+  $("#set-snooze-custom").hidden = true;
+  resetSettingsPassword();
+  const dialog = $("#settings");
+  if (!dialog.open) dialog.showModal();
+  renderSettings();
+  renderSettingsVersion();
+  loadKeywords();
+  loadPrivacy();
+  loadSessions();
+  loadAppSettings();
+  $(`#set-tab-${settingsTab}`).focus();
+}
+
+function selectSettingsTab(tab, { focus = false } = {}) {
+  if (tab === settingsTab) return;
+  cancelHotkeyCapture();
+  settingsTab = tab;
+  setSaved("");
+  renderSettings();
+  if (tab === "app") loadAppSettings();
+  if (focus) $(`#set-tab-${tab}`).focus();
+}
+
+/* 머리글의 "저장됨"·저장 실패 표시. kind: "" | "ok" | "err" */
+function setSaved(kind, text = "") {
+  const node = $("#set-saved");
+  node.replaceChildren();
+  node.hidden = !kind;
+  node.classList.toggle("err", kind === "err");
+  if (!kind) return;
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("class", "i");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", kind === "err" ? "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17ZM12 7.5v5M12 16v.5" : "m5 12.5 4 4L19 7");
+  icon.append(path);
+  node.append(icon, kind === "err" ? text || "저장하지 못해 이전 값으로 되돌렸습니다" : "저장됨");
+}
+
+function renderSettings() {
+  if (!state.me) return;
+  $("#set-tab-app").hidden = !isDesktopApp();
+  $("#set-tabs").setAttribute("aria-orientation", window.matchMedia?.("(max-width: 720px)").matches ? "horizontal" : "vertical");
+  for (const tab of SETTINGS_TABS) {
+    const button = $(`#set-tab-${tab}`);
+    const current = tab === settingsTab;
+    button.setAttribute("aria-selected", String(current));
+    button.tabIndex = current ? 0 : -1;
+    $(`#set-${tab}`).hidden = !current;
+  }
+  $("#set-pane-title").textContent = SETTINGS_TITLES[settingsTab];
+  // 내 정보
+  const me = state.me;
+  $("#set-name").textContent = me.fullName || me.email || "";
+  $("#set-org").textContent = mySubtitle() || "";
+  $("#set-kv-name").textContent = me.fullName || "-";
+  $("#set-kv-dept").textContent = me.department || "-";
+  $("#set-kv-pos").textContent = me.position || "-";
+  $("#set-kv-id").textContent = me.email || "-";
+  renderMyAvatar();
+  // 알림
+  const prefs = state.prefs;
+  const n = prefs.notify;
+  renderSnoozeChoices();
+  const forced = Boolean(me.policy?.forcePreviewHidden) || prefs.locked.includes("notify.preview");
+  const mode = previewMode();
+  const cards = $("#set-preview");
+  cards.classList.toggle("locked", forced);
+  for (const card of cards.querySelectorAll(".rcard")) {
+    const checked = card.dataset.pv === mode;
+    card.setAttribute("aria-checked", String(checked));
+    card.setAttribute("aria-disabled", String(forced));
+    card.tabIndex = checked ? 0 : -1;
+  }
+  $("#set-preview-lock").hidden = !forced;
+  $("#set-preview-desc").textContent = forced
+    ? "관리자가 알림 내용을 숨기도록 정했습니다. 바꾸려면 관리자에게 문의하세요."
+    : "Windows 알림 팝업에 무엇을 보여 줄지 고릅니다.";
+  $("#set-sound-row").hidden = !isDesktopApp();
+  $("#set-sound-web").hidden = isDesktopApp();
+  $("#set-flash-row").hidden = !isDesktopApp();
+  $("#set-sound").value = n.sound;
+  $("#set-flash").setAttribute("aria-checked", String(n.flash));
+  $("#set-reply").setAttribute("aria-checked", String(n.replyBypassMute));
+  $("#set-dnd").setAttribute("aria-checked", String(prefs.dnd.enabled));
+  $("#set-dnd-sum").textContent = prefs.dnd.enabled
+    ? `${dndSummary(prefs.dnd)} · 나를 멘션한 메시지와 중요 메시지는 방해 금지 중에도 알립니다.`
+    : "나를 멘션한 메시지와 중요 메시지는 방해 금지 중에도 알립니다.";
+  $("#set-from").value = prefs.dnd.from;
+  $("#set-to").value = prefs.dnd.to;
+  $("#set-weekends").checked = prefs.dnd.weekends;
+  for (const id of ["#set-from", "#set-to", "#set-weekends"]) $(id).disabled = !prefs.dnd.enabled;
+  renderMutedSettings();
+  renderKeywords();
+  renderPrefRadios();
+  renderChatSettings();
+  renderSecuritySettings();
+}
+
+/* 알림 끈 대화방. 이름을 모르는 대화방(나간 그룹 등)도 지울 수 있게 남긴다. */
+function mutedRoom(key) {
+  if (key === "general") {
+    const node = el("span", "av notice");
+    node.setAttribute("aria-hidden", "true");
+    node.append(iconUse("ico-notice"));
+    return { name: GENERAL_NAME, sub: "전체 대화방", avatar: node };
+  }
+  const [kind, id] = key.split(":");
+  if (kind === "dm") {
+    const person = personById(Number(id));
+    return { name: person?.fullName || "알 수 없는 직원", sub: person ? personTitle(person) || "1:1 대화" : "1:1 대화", avatar: avatar(person) };
+  }
+  if (kind === "group") {
+    const group = groupById(Number(id));
+    const count = Array.isArray(group?.memberIds) ? group.memberIds.length : 0;
+    return {
+      name: group ? group.name || (group.dept ? "부서 대화방" : "이름 없는 그룹") : "나간 대화방",
+      sub: group ? [group.dept ? "부서 대화방" : "그룹", count ? `${count}명` : ""].filter(Boolean).join(" · ") : "더는 참여하지 않는 대화방",
+      avatar: group?.dept ? deptAvatar() : groupAvatar(false),
+    };
+  }
+  return { name: key, sub: "", avatar: groupAvatar(false) };
+}
+
+function renderMutedSettings() {
+  const list = $("#set-muted");
+  list.replaceChildren();
+  const keys = state.prefs.muted;
+  list.hidden = !keys.length;
+  $("#set-muted-empty").hidden = Boolean(keys.length);
+  $("#set-muted-n").textContent = keys.length ? String(keys.length) : "";
+  for (const key of keys) {
+    const room = mutedRoom(key);
+    const row = el("div", "mroom");
+    row.setAttribute("role", "listitem");
+    const text = el("span", "");
+    text.append(el("b", "", room.name), el("small", "", room.sub));
+    const button = el("button", "txt-btn", "알림 켜기");
+    button.type = "button";
+    button.setAttribute("aria-label", `${room.name} 알림 켜기`);
+    button.addEventListener("click", () => {
+      saveSettings({ muted: state.prefs.muted.filter((item) => item !== key) }, `${room.name} 알림을 켰습니다.`);
+    });
+    row.append(room.avatar, text, button);
+    list.append(row);
+  }
+}
+
+/* 바꾸면 바로 저장한다. 실패하면 서버 값을 다시 읽어 되돌리고 머리글에 알린다. */
+function saveSettings(patch, done) {
+  return patchPrefs(patch, {
+    done,
+    onSaved: () => setSaved("ok"),
+    // 정책 고정(403)은 서버 문구를, 그 밖에는 시안 문구를 보인다.
+    onError: (error) => setSaved("err", error.status === 403 && error.message ? error.message : ""),
+  });
+}
+
+/* prefs 저장의 유일한 길.
+ * - 화면 상태는 바로 바꾼다(묶음은 보낸 필드만 합치고, 목록은 통째로 바꾼다).
+ * - 요청마다 순번을 매기고, 묶음마다 "마지막으로 그 묶음을 바꾼 요청"을 기억한다.
+ * - 응답은 마지막 요청이면 전체를, 아니면 그 요청이 바꾼 묶음 중 뒤에 다른 요청이 건드리지 않은 것만 반영한다. */
+const prefsGroupSeq = {};
+
+async function patchPrefs(patch, { done = "", onSaved = null, onError = null } = {}) {
+  if (!state.me) return false;
+  const session = state.sessionGen;
+  const previous = {};
+  for (const name of Object.keys(patch)) previous[name] = state.prefs[name];
+  // 묶음(notify·dnd·display…)은 보낸 필드만 덮고, 목록(favorites·muted)은 통째로 바꾼다.
+  const merged = {};
+  for (const [name, value] of Object.entries(patch)) {
+    const current = state.prefs[name];
+    merged[name] = value && typeof value === "object" && !Array.isArray(value) && current && typeof current === "object" && !Array.isArray(current)
+      ? { ...current, ...value }
+      : value;
+  }
+  state.prefs = { ...state.prefs, ...merged };
+  settingsSaving += 1;
+  const seq = ++settingsSeq;
+  for (const name of Object.keys(patch)) prefsGroupSeq[name] = seq;
+  // 응답(서버의 전체 값)에서 이 요청이 반영해도 되는 묶음만 가져온다.
+  const adopt = (data) => {
+    const fresh = normalizePrefs(data);
+    if (seq === settingsSeq) {
+      state.prefs = fresh;
+      return;
+    }
+    const next = { ...state.prefs };
+    for (const name of Object.keys(patch)) if (prefsGroupSeq[name] === seq) next[name] = fresh[name];
+    next.locked = fresh.locked;
+    state.prefs = next;
+  };
+  applyPrefs();
+  renderSettings();
+  renderSnooze();
+  renderList();
+  updateRoomMenu();
+  try {
+    const data = await api("PATCH", "/api/prefs", patch);
+    if (session !== state.sessionGen) return false;
+    adopt(data);
+    onSaved?.();
+    if (done) announce(done);
+    return true;
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return false;
+    onError?.(error);
+    // 되돌리기: 서버 값을 다시 읽어, 이 요청이 마지막으로 바꾼 묶음(마지막 요청이면 전체)을 맞춘다.
+    try {
+      const data = await api("GET", "/api/prefs");
+      if (session !== state.sessionGen) return false;
+      adopt(data);
+    } catch {
+      const next = { ...state.prefs };
+      for (const name of Object.keys(patch)) if (prefsGroupSeq[name] === seq) next[name] = previous[name];
+      state.prefs = next;
+    }
+    return false;
+  } finally {
+    settingsSaving -= 1;
+    if (!settingsSaving && prefsReloadPending && session === state.sessionGen) {
+      prefsReloadPending = false;
+      loadPrefs();
+    }
+    if (session === state.sessionGen) {
+      applyPrefs();
+      if ($("#settings").open) renderSettings();
+      renderSnooze();
+      renderList();
+      updateRoomMenu();
+    }
+  }
+}
+
+function saveNotify(change, done) {
+  return saveSettings({ notify: { ...change } }, done);
+}
+
+function saveDnd(change, done) {
+  return saveSettings({ dnd: { ...change } }, done);
+}
+
+/* 버전: 웹은 /api/session의 version, PC 앱은 app_info. 모르는 값은 쓰지 않는다. */
+async function renderSettingsVersion() {
+  const web = state.me?.version ? `웹 ${state.me.version}` : "";
+  const show = (desktop) => {
+    $("#set-version").textContent = [desktop, web].filter(Boolean).join(" · ") || "버전 정보 없음";
+  };
+  show("");
+  if (!isDesktopApp() || !bridge?.appInfo) return;
+  const info = await bridge.appInfo();
+  if (info?.version && $("#settings").open) show(`PC 앱 ${info.version}`);
+}
+
+/* ── P2·P3 고르기(카드·분할 버튼): data-pref="묶음.필드", 각 단추 data-v ── */
+function prefValue(path) {
+  const [group, field] = path.split(".");
+  return state.prefs?.[group]?.[field];
+}
+
+function savePrefValue(path, value, done) {
+  const [group, field] = path.split(".");
+  if (prefValue(path) === value) return;
+  saveSettings({ [group]: { [field]: value } }, done);
+}
+
+const PREF_DONE = {
+  "display.theme": "테마를 바꿨습니다.",
+  "display.fontSize": "글자 크기를 바꿨습니다.",
+  "display.density": "대화창 밀도를 바꿨습니다.",
+  "chat.roomSort": "대화방 목록 정렬을 바꿨습니다.",
+};
+
+function renderPrefRadios() {
+  for (const group of document.querySelectorAll("#settings [data-pref]")) {
+    const value = prefValue(group.dataset.pref);
+    for (const button of group.querySelectorAll("[data-v]")) {
+      const checked = button.dataset.v === value;
+      button.setAttribute("aria-checked", String(checked));
+      button.tabIndex = checked ? 0 : -1;
+    }
+  }
+}
+
+for (const group of document.querySelectorAll("#settings [data-pref]")) {
+  group.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-v]");
+    if (button) savePrefValue(group.dataset.pref, button.dataset.v, PREF_DONE[group.dataset.pref]);
+  });
+  group.addEventListener("keydown", (event) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const buttons = [...group.querySelectorAll("[data-v]")];
+    const index = buttons.findIndex((button) => button.dataset.v === prefValue(group.dataset.pref));
+    const next = buttons[(index + step + buttons.length) % buttons.length];
+    savePrefValue(group.dataset.pref, next.dataset.v, PREF_DONE[group.dataset.pref]);
+    next.focus();
+  });
+}
+
+/* ── P3 대화 ── */
+function renderChatSettings() {
+  const chat = state.prefs.chat;
+  for (const input of document.querySelectorAll('#set-enter input[name="set-enter"]')) input.checked = (input.value === "enter") === chat.enterSends;
+  $("#set-autoimg").setAttribute("aria-checked", String(chat.autoShowImages));
+}
+
+$("#set-enter").addEventListener("change", (event) => {
+  const enter = event.target.value === "enter";
+  saveSettings({ chat: { enterSends: enter } }, enter ? "Enter로 보냅니다." : "Ctrl+Enter로 보냅니다.");
+});
+$("#set-autoimg").addEventListener("click", () => {
+  const next = !state.prefs.chat.autoShowImages;
+  saveSettings({ chat: { autoShowImages: next } }, next ? "사진을 자동으로 보여 줍니다." : "사진은 눌러야 보입니다.")
+    .then(() => {
+      if (isTalkView()) renderLog();
+    });
+});
+
+/* ── P4 보안·개인정보 ── */
+const LOCK_CHOICES = [1, 3, 5, 10, 15, 30, 60, 120, 240, 480];
+
+function renderSecuritySettings() {
+  const admin = adminLockMinutes();
+  const mine = state.prefs.lock.minutes;
+  const select = $("#set-lock");
+  const options = [{ value: "", label: admin ? `기관 설정 따르기 (${admin}분)` : "기관 설정 따르기 (끔)" }];
+  const choices = admin ? LOCK_CHOICES.filter((minutes) => minutes < admin) : LOCK_CHOICES.filter((minutes) => minutes >= 5 && minutes <= 60);
+  if (Number.isInteger(mine) && mine > 0 && !choices.includes(mine)) choices.push(mine);
+  choices.sort((a, b) => a - b);
+  for (const minutes of choices) options.push({ value: String(minutes), label: `${minutes}분` });
+  if (!admin && mine === 0) options.push({ value: "0", label: "끄기" });
+  select.replaceChildren(...options.map((option) => {
+    const node = document.createElement("option");
+    node.value = option.value;
+    node.textContent = option.label;
+    return node;
+  }));
+  select.value = Number.isInteger(mine) ? String(mine) : "";
+  $("#set-lock-desc").textContent = admin
+    ? `기관 설정 ${admin}분보다 짧게만 고를 수 있습니다.`
+    : "기관 설정은 자동 잠금을 쓰지 않습니다. 직접 고를 수 있습니다.";
+  $("#set-away").value = String(state.prefs.presence.awayMinutes);
+  renderPrivacy();
+  renderSessions();
+}
+
+$("#set-lock").addEventListener("change", (event) => {
+  const value = event.currentTarget.value;
+  const minutes = value === "" ? null : Number(value);
+  saveSettings({ lock: { minutes } }, minutes === null ? "자동 잠금은 기관 설정을 따릅니다." : `${minutes}분 동안 입력이 없으면 잠급니다.`);
+});
+$("#set-away").addEventListener("change", (event) => {
+  const minutes = Number(event.currentTarget.value);
+  saveSettings({ presence: { awayMinutes: minutes } }, `${minutes}분 동안 입력이 없으면 자리 비움으로 바꿉니다.`);
+});
+
+const privacyState = { data: null, busy: false, gen: 0 };
+
+async function loadPrivacy() {
+  const gen = ++privacyState.gen;
+  const session = state.sessionGen;
+  try {
+    const data = await api("GET", "/api/me/privacy");
+    if (gen !== privacyState.gen || session !== state.sessionGen) return;
+    privacyState.data = { readReceipts: data?.readReceipts !== false, presence: data?.presence !== false, typing: data?.typing !== false };
+  } catch {
+    if (gen !== privacyState.gen) return;
+    privacyState.data = null;
+  }
+  renderPrivacy();
+}
+
+function renderPrivacy() {
+  $("#set-privacy-group").hidden = !privacyState.data;
+  if (!privacyState.data) return;
+  for (const button of document.querySelectorAll("#set-privacy-group [data-privacy]")) {
+    button.setAttribute("aria-checked", String(privacyState.data[button.dataset.privacy]));
+    button.disabled = privacyState.busy;
+  }
+}
+
+const PRIVACY_DONE = {
+  readReceipts: ["읽음 확인을 보냅니다.", "읽음 확인을 보내지 않습니다."],
+  presence: ["접속 상태를 공개합니다.", "접속 상태를 공개하지 않습니다."],
+  typing: ["입력 중 표시를 보냅니다.", "입력 중 표시를 보내지 않습니다."],
+};
+
+$("#set-privacy-group").addEventListener("click", async (event) => {
+  const button = event.target.closest?.("[data-privacy]");
+  if (!button || !privacyState.data || privacyState.busy) return;
+  const name = button.dataset.privacy;
+  const next = !privacyState.data[name];
+  const before = privacyState.data;
+  const session = state.sessionGen;
+  privacyState.data = { ...before, [name]: next };
+  privacyState.busy = true;
+  renderPrivacy();
+  try {
+    const data = await api("PATCH", "/api/me/privacy", { [name]: next });
+    if (session !== state.sessionGen) return;
+    privacyState.data = { readReceipts: data?.readReceipts !== false, presence: data?.presence !== false, typing: data?.typing !== false };
+    setSaved("ok");
+    announce(PRIVACY_DONE[name][next ? 0 : 1]);
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return;
+    privacyState.data = before;
+    setSaved("err", error.status === 403 && error.message ? error.message : "");
+  } finally {
+    privacyState.busy = false;
+    renderPrivacy();
+    button.focus();
+  }
+});
+
+const sessionList = { items: null, error: "", busy: false, gen: 0 };
+
+async function loadSessions() {
+  const gen = ++sessionList.gen;
+  const session = state.sessionGen;
+  try {
+    const data = await api("GET", "/api/me/sessions");
+    if (gen !== sessionList.gen || session !== state.sessionGen) return;
+    sessionList.items = Array.isArray(data?.sessions) ? data.sessions.filter((item) => item && item.id) : [];
+    sessionList.error = "";
+  } catch (error) {
+    if (gen !== sessionList.gen || error.status === 401) return;
+    sessionList.items = null;
+    sessionList.error = error.message || "로그인 목록을 불러오지 못했습니다.";
+  }
+  renderSessions();
+}
+
+function sessionWhen(value) {
+  const ms = typeof value === "number" ? (value > 1e12 ? value : value * 1000) : Date.parse(value || "");
+  if (!Number.isFinite(ms)) return "";
+  const minutes = Math.floor((Date.now() - ms) / 60000);
+  if (minutes < 2) return "지금 사용 중";
+  if (minutes < 60) return `${minutes}분 전 사용`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}시간 전 사용`;
+  return `${formatListTime(ms / 1000)} 사용`;
+}
+
+function renderSessions() {
+  const box = $("#set-sessions");
+  box.replaceChildren();
+  const error = $("#set-sess-error");
+  error.hidden = !sessionList.error;
+  error.querySelector("span").textContent = sessionList.error;
+  const items = sessionList.items || [];
+  box.hidden = !items.length;
+  const others = items.filter((item) => !item.current);
+  $("#set-sess-others").hidden = !sessionList.items;
+  $("#set-sess-others").disabled = sessionList.busy || !others.length;
+  // 지금 이 기기를 맨 위에
+  for (const item of [...items].sort((a, b) => Number(Boolean(b.current)) - Number(Boolean(a.current)))) {
+    const row = el("div", "ses");
+    row.setAttribute("role", "listitem");
+    const icon = el("span", "ic");
+    icon.setAttribute("aria-hidden", "true");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "i");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", item.client === "desktop"
+      ? "M5.5 4.5h13a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2ZM9 20h6M12 16v4"
+      : "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17ZM3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17");
+    svg.append(path);
+    icon.append(svg);
+    const text = el("span", "");
+    const title = el("b", "", item.client === "desktop" ? "PC 앱" : "브라우저");
+    if (item.current) title.append(el("span", "cur", "지금 이 기기"));
+    text.append(title, el("small", "", [item.ip, item.current ? "지금 사용 중" : sessionWhen(item.lastSeenAt)].filter(Boolean).join(" · ")));
+    row.append(icon, text);
+    if (item.current) row.append(el("span", ""));
+    else {
+      const out = el("button", "btn line sm danger", "로그아웃");
+      out.type = "button";
+      out.disabled = sessionList.busy;
+      out.setAttribute("aria-label", `${item.client === "desktop" ? "PC 앱" : "브라우저"} ${item.ip || ""} 로그아웃`.replace(/\s+/g, " "));
+      out.addEventListener("click", () => endSessions(`/api/me/sessions/${encodeURIComponent(item.id)}`));
+      row.append(out);
+    }
+    box.append(row);
+  }
+}
+
+async function endSessions(path) {
+  const session = state.sessionGen;
+  sessionList.busy = true;
+  sessionList.error = "";
+  renderSessions();
+  try {
+    const data = await api("DELETE", path);
+    if (session !== state.sessionGen) return;
+    const ended = Number(data?.ended) || 0;
+    announce(ended ? `${ended}곳에서 로그아웃했습니다.` : "로그아웃할 곳이 없습니다.");
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return;
+    sessionList.error = error.message || "로그아웃하지 못했습니다.";
+  } finally {
+    sessionList.busy = false;
+    await loadSessions();
+    $("#set-sess-others").focus();
+  }
+}
+
+$("#set-sess-others").addEventListener("click", async () => {
+  const ok = await askConfirm({ title: "다른 곳에서 모두 로그아웃할까요?", text: "지금 이 기기를 뺀 모든 로그인이 끝납니다.", confirm: "모두 로그아웃", cancel: "취소" });
+  if (ok) endSessions("/api/me/sessions?others=1");
+});
+
+/* ── P5 PC 앱(데스크톱만). 명령이 실패하면 데스크톱이 준 한국어 문장을 보인다. ── */
+const appSettings = { autostart: null, closeAction: null, hotkey: null, captureBlock: null, capturing: false };
+
+function setAppError(text, id = "#set-app-error") {
+  const box = $(id);
+  box.hidden = !text;
+  box.querySelector("span").textContent = text || "";
+}
+
+async function loadAppSettings() {
+  if (!isDesktopApp() || !bridge?.getAutostart) return;
+  setAppError("");
+  setAppError("", "#set-hk-error");
+  const [autostart, closeAction, hotkey, info] = await Promise.all([
+    bridge.getAutostart().catch(() => null),
+    bridge.getCloseAction().catch(() => null),
+    bridge.getHotkey().catch(() => null),
+    bridge.appInfo?.().catch(() => null),
+  ]);
+  Object.assign(appSettings, { autostart, closeAction, hotkey, captureBlock: info ? info.captureBlock : null });
+  renderAppSettings();
+}
+
+/* "Ctrl+Shift+Space" → [Ctrl] + [Shift] + [Space] */
+function renderHotkeyKeys(accelerator) {
+  const box = $("#set-hk-keys");
+  box.replaceChildren();
+  const parts = String(accelerator || "").split("+").filter(Boolean);
+  parts.forEach((part, index) => {
+    if (index) box.append(el("span", "plus", "+"));
+    const label = /^(super|meta|cmd|command)$/i.test(part) ? "Win" : /^(commandorcontrol|cmdorctrl|control)$/i.test(part) ? "Ctrl" : part;
+    box.append(el("kbd", "k", label));
+  });
+  if (!parts.length) box.append(el("span", "note", "지정한 키가 없습니다"));
+}
+
+function renderAppSettings() {
+  const ready = appSettings.autostart !== null;
+  $("#set-autostart").setAttribute("aria-checked", String(Boolean(appSettings.autostart)));
+  $("#set-autostart").disabled = !ready;
+  for (const input of document.querySelectorAll('#set-close-action input[name="set-close-action"]')) {
+    input.checked = input.value === (appSettings.closeAction || "tray");
+    input.disabled = appSettings.closeAction === null;
+  }
+  const hotkey = appSettings.hotkey;
+  $("#set-hk-on").setAttribute("aria-checked", String(Boolean(hotkey?.enabled)));
+  $("#set-hk-on").disabled = !hotkey;
+  $("#set-hk-change").disabled = !hotkey;
+  if (!appSettings.capturing) renderHotkeyKeys(hotkey?.accelerator || "");
+  const inactive = Boolean(hotkey?.enabled && hotkey.active === false);
+  if (inactive && !appSettings.capturing) {
+    setAppError("다른 프로그램이 이 단축키를 쓰고 있어 지금은 동작하지 않습니다. 다른 키를 골라 주세요.", "#set-hk-error");
+  } else if (!inactive && appSettings.hotkeyInactiveShown) {
+    setAppError("", "#set-hk-error");
+  }
+  appSettings.hotkeyInactiveShown = inactive;
+  const capture = appSettings.captureBlock;
+  $("#set-capture").setAttribute("aria-checked", String(Boolean(capture)));
+  $("#set-capture-text").textContent = capture === null ? "확인하지 못했습니다" : capture ? "캡처 막기 켜짐" : "캡처 막기 꺼짐";
+}
+
+async function runAppSetting(action, done, errorId = "#set-app-error") {
+  setAppError("", errorId);
+  try {
+    await action();
+    setSaved("ok");
+    if (done) announce(done);
+    return true;
+  } catch (error) {
+    setAppError(error.message || "PC 앱 설정을 바꾸지 못했습니다.", errorId);
+    setSaved("err", error.message || "");
+    return false;
+  } finally {
+    renderAppSettings();
+  }
+}
+
+$("#set-autostart").addEventListener("click", () => {
+  const next = !appSettings.autostart;
+  runAppSetting(async () => {
+    appSettings.autostart = await bridge.setAutostart(next);
+  }, next ? "Windows 시작 시 실행합니다." : "Windows 시작 시 실행하지 않습니다.");
+});
+$("#set-close-action").addEventListener("change", (event) => {
+  const action = event.target.value === "quit" ? "quit" : "tray";
+  runAppSetting(async () => {
+    appSettings.closeAction = await bridge.setCloseAction(action);
+  }, action === "quit" ? "창을 닫으면 상상톡을 끝냅니다." : "창을 닫으면 트레이로 숨깁니다.");
+});
+$("#set-hk-on").addEventListener("click", () => {
+  const next = !appSettings.hotkey?.enabled;
+  runAppSetting(async () => {
+    appSettings.hotkey = await bridge.setHotkey(next);
+  }, next ? "창 불러오기 단축키를 켰습니다." : "창 불러오기 단축키를 껐습니다.", "#set-hk-error");
+});
+
+/* 단축키 바꾸기: 버튼을 누른 뒤 새 조합을 누른다(Esc 취소). Ctrl·Alt·Win 중 하나가 있어야 한다. */
+const HOTKEY_KEYS = { Escape: "Escape", Space: "Space", Enter: "Enter", Tab: "Tab", Backspace: "Backspace", Delete: "Delete", Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+
+function hotkeyFromEvent(event) {
+  const code = event.code || "";
+  let key = "";
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code;
+  else if (HOTKEY_KEYS[code]) key = HOTKEY_KEYS[code];
+  if (!key) return "";
+  const parts = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.metaKey) parts.push("Super");
+  parts.push(key);
+  return parts.join("+");
+}
+
+function cancelHotkeyCapture() {
+  if (!appSettings.capturing) return;
+  appSettings.capturing = false;
+  $("#set-hk-change").textContent = "바꾸기";
+  $("#set-hk-change").setAttribute("aria-pressed", "false");
+  $("#set-hk-hint").hidden = true;
+  renderHotkeyKeys(appSettings.hotkey?.accelerator || "");
+}
+
+$("#set-hk-change").addEventListener("click", () => {
+  if (appSettings.capturing) {
+    cancelHotkeyCapture();
+    return;
+  }
+  appSettings.capturing = true;
+  setAppError("", "#set-hk-error");
+  const button = $("#set-hk-change");
+  button.textContent = "키를 누르세요…";
+  button.setAttribute("aria-pressed", "true");
+  $("#set-hk-hint").hidden = false;
+  $("#set-hk-keys").replaceChildren(el("span", "note", "새 단축키를 기다리는 중"));
+});
+$("#set-hk-change").addEventListener("blur", () => cancelHotkeyCapture());
+$("#set-hk-change").addEventListener("keydown", async (event) => {
+  if (!appSettings.capturing) return;
+  if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelHotkeyCapture();
+    return;
+  }
+  if (event.key === "Tab") {
+    cancelHotkeyCapture();
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (["Control", "Shift", "Alt", "Meta", "OS"].includes(event.key)) return; // 조합을 다 누를 때까지 기다린다
+  const accelerator = hotkeyFromEvent(event);
+  if (!accelerator) {
+    setAppError("이 키는 단축키로 쓸 수 없습니다. 다른 키를 골라 주세요.", "#set-hk-error");
+    return;
+  }
+  const modifiers = [event.ctrlKey, event.altKey, event.shiftKey].filter(Boolean).length;
+  if (!event.metaKey && modifiers < 2) {
+    setAppError("단축키에는 Ctrl·Alt·Shift 중 두 개 이상 또는 Windows 키가 들어가야 합니다.", "#set-hk-error");
+    return;
+  }
+  if (/^Ctrl\+(Alt\+Delete|Shift\+Escape)$/.test(accelerator)) {
+    setAppError("Windows가 쓰는 단축키는 지정할 수 없습니다.", "#set-hk-error");
+    return;
+  }
+  appSettings.capturing = false;
+  $("#set-hk-change").textContent = "바꾸기";
+  $("#set-hk-change").setAttribute("aria-pressed", "false");
+  $("#set-hk-hint").hidden = true;
+  await runAppSetting(async () => {
+    appSettings.hotkey = await bridge.setHotkey(true, accelerator);
+  }, `창 불러오기 단축키를 ${accelerator}(으)로 바꿨습니다.`, "#set-hk-error");
+});
+
+/* P1 내 사진: 레일·상태 창·설정에 같은 사진. 주소가 ""면 기본 거북이(목업). 실서버는 자동 그림 주소를 준다. */
+function renderMyAvatar() {
+  const url = state.me?.avatarUrl || "";
+  const set = (img, onTurtle) => {
+    if (!img) return;
+    img.onerror = null;
+    if (url) {
+      img.onerror = () => {
+        img.onerror = null;
+        img.src = TURTLE;
+        onTurtle?.(true);
+      };
+      img.src = url;
+      onTurtle?.(false);
+    } else {
+      img.src = TURTLE;
+      onTurtle?.(true);
+    }
+  };
+  set($("#me-avatar img"), (turtle) => $("#me-avatar").classList.toggle("turtle", turtle));
+  set($("#sp-pic"));
+  set($("#set-pic"), (turtle) => $("#set-pic").classList.toggle("turtle", turtle));
+  if ($("#set-pic-reset")) $("#set-pic-reset").hidden = !url;
+}
+
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+
+function setPicError(text) {
+  $("#set-pic-error").hidden = !text;
+  $("#set-pic-error span").textContent = text;
+}
+
+/* 내 사진이 바뀌면 사람 목록의 내 항목도 맞춘다(목록·대화의 내 아바타). */
+function applyMyAvatar(url) {
+  if (!state.me) return;
+  state.me.avatarUrl = url || "";
+  const self = personById(state.me.userId);
+  if (self) self.avatarUrl = url || "";
+  renderMyAvatar();
+  renderList();
+  if (isTalkView()) renderLog();
+}
+
+async function changeAvatar(file) {
+  setPicError("");
+  if (!file) return;
+  const typeOk = file.type ? /^image\/(png|jpeg)$/.test(file.type) : /\.(png|jpe?g)$/i.test(file.name);
+  if (!typeOk) {
+    setPicError("사진은 PNG나 JPG 파일만 올릴 수 있습니다.");
+    return;
+  }
+  if (file.size > AVATAR_MAX_BYTES) {
+    setPicError("사진은 5MB까지 올릴 수 있습니다.");
+    return;
+  }
+  const session = state.sessionGen;
+  const button = $("#set-pic-change");
+  button.disabled = true;
+  button.textContent = "올리는 중…";
+  try {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const response = await fetch("/api/me/avatar", { method: "POST", body: form });
+    const data = await response.json().catch(() => ({}));
+    if (session !== state.sessionGen) return;
+    if (response.status === 401) {
+      showLogin("다시 로그인해 주세요.");
+      return;
+    }
+    if (guardResponse(response.status, data)) return;
+    if (!response.ok) throw Object.assign(new Error(data.error || "사진을 바꾸지 못했습니다."), { status: response.status });
+    applyMyAvatar(data.avatarUrl || "");
+    setSaved("ok");
+    announce("내 사진을 바꿨습니다.");
+  } catch (error) {
+    if (session !== state.sessionGen) return;
+    setPicError(error.message || "사진을 바꾸지 못했습니다.");
+  } finally {
+    button.disabled = false;
+    button.textContent = "사진 바꾸기";
+  }
+}
+
+async function resetAvatar() {
+  setPicError("");
+  const session = state.sessionGen;
+  const button = $("#set-pic-reset");
+  button.disabled = true;
+  try {
+    const data = await api("DELETE", "/api/me/avatar");
+    if (session !== state.sessionGen) return;
+    applyMyAvatar(data.avatarUrl || "");
+    setSaved("ok");
+    announce("기본 사진으로 되돌렸습니다.");
+    $("#set-pic-change").focus();
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return;
+    setPicError(error.message || "사진을 되돌리지 못했습니다.");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("#set-pic-change").addEventListener("click", () => $("#set-pic-file").click());
+$("#set-pic-file").addEventListener("change", (event) => {
+  const file = event.currentTarget.files?.[0];
+  event.currentTarget.value = "";
+  changeAvatar(file);
+});
+$("#set-pic-reset").addEventListener("click", resetAvatar);
+
+/* 내 정보 > 비밀번호 바꾸기(설정 안에서 바로) */
+function resetSettingsPassword() {
+  $("#set-pw-form").hidden = true;
+  $("#set-pw-closed").hidden = false;
+  for (const id of ["#set-pw-old", "#set-pw-new", "#set-pw-confirm"]) {
+    $(id).value = "";
+    $(id).classList.remove("bad");
+    $(id).removeAttribute("aria-invalid");
+  }
+  setPwError("");
+}
+
+function setPwError(text, id = "") {
+  const box = $("#set-pw-error");
+  box.hidden = !text;
+  box.querySelector("span").textContent = text;
+  if (id) {
+    $(id).classList.add("bad");
+    $(id).setAttribute("aria-invalid", "true");
+    $(id).focus();
+  }
+}
+
+$("#set-pw-open").addEventListener("click", () => {
+  $("#set-pw-closed").hidden = true;
+  $("#set-pw-form").hidden = false;
+  $("#set-pw-old").focus();
+});
+$("#set-pw-cancel").addEventListener("click", () => {
+  resetSettingsPassword();
+  $("#set-pw-open").focus();
+});
+$("#set-pw-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  for (const id of ["#set-pw-old", "#set-pw-new", "#set-pw-confirm"]) {
+    $(id).classList.remove("bad");
+    $(id).removeAttribute("aria-invalid");
+  }
+  setPwError("");
+  const oldPassword = $("#set-pw-old").value;
+  const newPassword = $("#set-pw-new").value;
+  if (!oldPassword) return setPwError("현재 비밀번호를 입력하세요.", "#set-pw-old");
+  if (newPassword.length < 8) return setPwError("새 비밀번호는 8자 이상이어야 합니다.", "#set-pw-new");
+  if (newPassword === oldPassword) return setPwError("새 비밀번호는 지금과 달라야 합니다.", "#set-pw-new");
+  if ($("#set-pw-confirm").value !== newPassword) return setPwError("새 비밀번호와 같지 않습니다.", "#set-pw-confirm");
+  const button = $("#set-pw-submit");
+  const session = state.sessionGen;
+  button.disabled = true;
+  button.textContent = "바꾸는 중…";
+  try {
+    await api("POST", "/api/session/password", { oldPassword, newPassword });
+    if (session !== state.sessionGen) return;
+    resetSettingsPassword();
+    showToast("비밀번호를 바꿨습니다.");
+    $("#set-pw-open").focus();
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return;
+    setPwError(error.message || "비밀번호를 바꾸지 못했습니다.", error.status === 400 || error.status === 403 ? "#set-pw-old" : "");
+  } finally {
+    button.disabled = false;
+    button.textContent = "비밀번호 바꾸기";
+  }
+});
+
+$("#rail-settings").addEventListener("click", (event) => openSettings(undefined, { returnFocus: event.currentTarget }));
+$("#set-close").addEventListener("click", () => $("#settings").close());
+$("#settings").addEventListener("close", () => {
+  cancelHotkeyCapture();
+  $("#set-snooze-custom").hidden = true;
+  resetSettingsPassword();
+  const back = settingsReturnFocus;
+  settingsReturnFocus = null;
+  if (back?.isConnected && !state.locked && !state.pwForced) back.focus();
+});
+// 바깥(배경)을 누르면 닫는다.
+$("#settings").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+$("#set-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest?.("[role=tab]")?.dataset.tab;
+  if (tab) selectSettingsTab(tab);
+});
+$("#set-tabs").addEventListener("keydown", (event) => {
+  if (!event.target.closest?.("[role=tab]")) return;
+  const tabs = settingsTabsShown();
+  let index = tabs.indexOf(settingsTab);
+  if (event.key === "ArrowDown" || event.key === "ArrowRight") index = (index + 1) % tabs.length;
+  else if (event.key === "ArrowUp" || event.key === "ArrowLeft") index = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === "Home") index = 0;
+  else if (event.key === "End") index = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  selectSettingsTab(tabs[index], { focus: true });
+});
+
+function choosePreview(value, { focus = false } = {}) {
+  if (!PREVIEW_MODES.includes(value) || $("#set-preview").classList.contains("locked")) return;
+  if (value !== previewMode()) saveNotify({ preview: value }, "알림 미리 보기를 바꿨습니다.");
+  if (focus) $(`#set-preview [data-pv="${value}"]`)?.focus();
+}
+$("#set-preview").addEventListener("click", (event) => {
+  const card = event.target.closest?.(".rcard");
+  if (card) choosePreview(card.dataset.pv);
+});
+$("#set-preview").addEventListener("keydown", (event) => {
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+  if (!step) return;
+  event.preventDefault();
+  const index = PREVIEW_MODES.indexOf(previewMode());
+  choosePreview(PREVIEW_MODES[(index + step + PREVIEW_MODES.length) % PREVIEW_MODES.length], { focus: true });
+});
+$("#set-sound").addEventListener("change", (event) => {
+  const value = event.currentTarget.value;
+  if (NOTIFY_SOUNDS.includes(value)) saveNotify({ sound: value }, "알림음을 바꿨습니다.");
+});
+$("#set-sound-test").addEventListener("click", () => {
+  notify({ title: "상상톡", body: "알림 소리를 확인합니다.", sound: $("#set-sound").value, flash: false });
+});
+$("#set-flash").addEventListener("click", () => {
+  const next = !state.prefs.notify.flash;
+  saveNotify({ flash: next }, next ? "작업표시줄 깜박임을 켰습니다." : "작업표시줄 깜박임을 껐습니다.");
+});
+$("#set-reply").addEventListener("click", () => {
+  const next = !state.prefs.notify.replyBypassMute;
+  saveNotify({ replyBypassMute: next }, next ? "내 글에 단 답장은 알림을 끈 대화방에서도 받습니다." : "내 글에 단 답장도 대화방 알림 설정을 따릅니다.");
+});
+$("#set-dnd").addEventListener("click", () => {
+  const next = !state.prefs.dnd.enabled;
+  saveDnd({ enabled: next }, next ? "방해 금지를 켰습니다." : "방해 금지를 껐습니다.");
+});
+for (const [id, field] of [["#set-from", "from"], ["#set-to", "to"]]) {
+  $(id).addEventListener("change", (event) => {
+    const value = event.currentTarget.value;
+    if (!/^\d\d:\d\d$/.test(value)) {
+      event.currentTarget.value = state.prefs.dnd[field];
+      return;
+    }
+    if (value !== state.prefs.dnd[field]) saveDnd({ [field]: value }, "방해 금지 시간을 바꿨습니다.");
+  });
+}
+$("#set-weekends").addEventListener("change", (event) => {
+  saveDnd({ weekends: event.currentTarget.checked }, "방해 금지 주말 설정을 바꿨습니다.");
+});
+
+/* ── N4 키워드 알림. API가 없으면(아직 목업 전) 이 묶음을 숨긴다. ── */
+
+const KEYWORD_MAX = 20;
+const keywordState = { list: [], available: false, busy: false, gen: 0, drawn: "" };
+
+async function loadKeywords() {
+  const gen = ++keywordState.gen;
+  const session = state.sessionGen;
+  try {
+    const data = await api("GET", "/api/keywords");
+    if (gen !== keywordState.gen || session !== state.sessionGen) return;
+    keywordState.list = Array.isArray(data?.keywords) ? data.keywords.filter((item) => typeof item === "string") : [];
+    keywordState.available = true;
+  } catch (error) {
+    if (gen !== keywordState.gen || session !== state.sessionGen) return;
+    keywordState.available = false;
+  }
+  renderKeywords();
+}
+
+function renderKeywords() {
+  const signature = keywordState.list.join("\u0000");
+  if (signature !== keywordState.drawn) {
+    keywordState.drawn = signature;
+    if (isTalkView() && state.messages.length) renderLog();
+  }
+  $("#set-kw-group").hidden = !keywordState.available;
+  if (!keywordState.available) return;
+  const box = $("#set-kws");
+  box.replaceChildren();
+  for (const word of keywordState.list) {
+    const chip = el("span", "kw", word);
+    chip.setAttribute("role", "listitem");
+    const remove = el("button", "");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `${word} 빼기`);
+    remove.append(iconUse("ico-x"));
+    remove.disabled = keywordState.busy;
+    remove.addEventListener("click", () => removeKeyword(word));
+    chip.append(remove);
+    box.append(chip);
+  }
+  const full = keywordState.list.length >= KEYWORD_MAX;
+  $("#set-kw-count").textContent = `${keywordState.list.length}/${KEYWORD_MAX}`;
+  $("#set-kw-input").disabled = full || keywordState.busy;
+  $("#set-kw-add").disabled = full || keywordState.busy;
+  $("#set-kw-input").placeholder = full ? "키워드는 20개까지 둘 수 있습니다" : "키워드 입력 (2~30자)";
+}
+
+function setKeywordError(text) {
+  $("#set-kw-error").hidden = !text;
+  $("#set-kw-error span").textContent = text;
+}
+
+async function changeKeywords(request, done) {
+  const session = state.sessionGen;
+  keywordState.busy = true;
+  setKeywordError("");
+  renderKeywords();
+  try {
+    const data = await request();
+    if (session !== state.sessionGen) return false;
+    if (Array.isArray(data?.keywords)) keywordState.list = data.keywords.filter((item) => typeof item === "string");
+    else await loadKeywords();
+    announce(done);
+    return true;
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return false;
+    setKeywordError(error.message || "키워드를 저장하지 못했습니다.");
+    return false;
+  } finally {
+    keywordState.busy = false;
+    renderKeywords();
+  }
+}
+
+$("#set-kw-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("#set-kw-input");
+  const word = input.value.replace(/\s+/g, " ").trim();
+  const length = Array.from(word).length;
+  if (length < 2 || length > 30) {
+    setKeywordError("키워드는 2~30자로 입력하세요.");
+    input.focus();
+    return;
+  }
+  if (keywordState.list.includes(word)) {
+    input.value = "";
+    setKeywordError("");
+    return;
+  }
+  const ok = await changeKeywords(() => api("POST", "/api/keywords", { keyword: word }), `키워드 "${word}"를 추가했습니다.`);
+  if (ok) {
+    input.value = "";
+    if (!input.disabled) input.focus();
+  }
+});
+
+function removeKeyword(word) {
+  changeKeywords(() => api("DELETE", `/api/keywords?keyword=${encodeURIComponent(word)}`), `키워드 "${word}"를 뺐습니다.`)
+    .then(() => $("#set-kw-input").focus());
+}
+
+/* ── N3 잠시 알림 끄기 ── */
+
+const SNOOZE_MAX_MS = 7 * 86400000;
+let snoozeTimer = 0;
+let snoozeEndTimer = 0;
+
+function snoozeUntilMs() {
+  const at = Date.parse(state.prefs?.notify?.snoozeUntil || "");
+  return Number.isFinite(at) && at > Date.now() ? at : 0;
+}
+
+function snoozed() {
+  return snoozeUntilMs() > 0;
+}
+
+/* 계약서 예시처럼 내 시간대의 오프셋을 붙인 ISO 문자열(예: 2026-11-18T18:00:00+09:00). */
+function isoLocal(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(offset);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+function snoozeLeftText(ms) {
+  const minutes = Math.max(1, Math.ceil(ms / 60000));
+  if (minutes < 60) return `${minutes}분`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours >= 24) return `${Math.floor(hours / 24)}일 ${hours % 24}시간`;
+  return rest ? `${hours}시간 ${rest}분` : `${hours}시간`;
+}
+
+/* 종의 알약은 좁으므로 짧게: 58분, 2시간, 3일 */
+function snoozePillText(ms) {
+  const minutes = Math.max(1, Math.ceil(ms / 60000));
+  if (minutes < 60) return `${minutes}분`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}시간`;
+  return `${Math.floor(minutes / 1440)}일`;
+}
+
+function snoozeEndText(at) {
+  const date = new Date(at);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  const day = sameDay ? "" : `${date.getMonth() + 1}월 ${date.getDate()}일 (${weekdayOf(date)}) `;
+  return `${day}${clockOf(date)}`;
+}
+
+function snoozeTargets(now = new Date()) {
+  const today = new Date(now);
+  today.setHours(23, 59, 0, 0);
+  return {
+    "1h": new Date(now.getTime() + 3600000),
+    "3h": new Date(now.getTime() + 3 * 3600000),
+    today: today.getTime() > now.getTime() + 60000 ? today : null,
+  };
+}
+
+/* 레일의 종: 끈 동안 "꺼짐"과 남은 시간 알약. 안 본 개수 배지는 숨긴다(PM 확정). 시간이 지나면 표시를 지운다. */
+function renderSnooze() {
+  const at = snoozeUntilMs();
+  const bell = $("#rail-bell");
+  bell.classList.toggle("snoozed", Boolean(at));
+  bell.querySelector("use").setAttribute("href", at ? "#ico-bell-off" : "#ico-bell");
+  $("#bell-label").textContent = at ? "꺼짐" : "알림";
+  const left = $("#bell-left");
+  left.hidden = !at;
+  left.textContent = at ? snoozePillText(at - Date.now()) : "";
+  renderBellBadge();
+  window.clearInterval(snoozeTimer);
+  snoozeTimer = 0;
+  window.clearTimeout(snoozeEndTimer);
+  snoozeEndTimer = 0;
+  if (at) {
+    // 끝나는 순간에 지운다(30초 간격 갱신을 기다리지 않는다).
+    snoozeEndTimer = window.setTimeout(() => {
+      state.prefs = { ...state.prefs, notify: { ...state.prefs.notify, snoozeUntil: null } };
+      renderSnooze();
+      if ($("#settings").open && settingsTab === "notify") renderSnoozeChoices();
+      if (!$("#snooze-menu").hidden) renderSnoozeMenu();
+    }, Math.min(at - Date.now() + 200, 2 ** 31 - 1));
+    snoozeTimer = window.setInterval(() => {
+      if (!snoozed()) state.prefs = { ...state.prefs, notify: { ...state.prefs.notify, snoozeUntil: null } };
+      renderSnooze();
+      if ($("#settings").open && settingsTab === "notify") renderSnoozeChoices();
+      if (!$("#snooze-menu").hidden) renderSnoozeMenu();
+    }, 30000);
+  }
+}
+
+function renderBellBadge() {
+  const at = snoozeUntilMs();
+  const unseen = activity.unseen;
+  const bell = $("#rail-bell");
+  const badge = $("#bell-badge");
+  badge.hidden = Boolean(at) || !unseen;
+  badge.textContent = unseen > 99 ? "99+" : String(unseen || "");
+  let label = unseen ? `알림 ${unseen}개 안 봄` : "알림";
+  if (at) label = `알림 꺼짐, ${snoozeEndText(at)}까지(${snoozeLeftText(at - Date.now())} 남음)${unseen ? `, 안 본 알림 ${unseen}개` : ""}`;
+  bell.setAttribute("aria-label", label);
+  bell.title = at ? `${snoozeEndText(at)}까지 알림 꺼짐 · 우클릭하면 다시 켜기` : "알림 · 우클릭하면 잠시 끄기";
+}
+
+function renderSnoozeChoices() {
+  const at = snoozeUntilMs();
+  $("#set-snz-on").hidden = !at;
+  $("#set-snz-pick").hidden = Boolean(at);
+  $("#set-snooze-state").textContent = at ? `${snoozeEndText(at)}까지 꺼짐 (${snoozeLeftText(at - Date.now())} 남음)` : "";
+  if (at) $("#set-snooze-custom").hidden = true;
+  const targets = snoozeTargets();
+  $("#set-snz-1h").title = `${clockOf(targets["1h"])}까지`;
+  $("#set-snz-3h").title = `${clockOf(targets["3h"])}까지`;
+  $("#set-snz-today").disabled = !targets.today;
+  $('#set-snooze [data-snooze="custom"]').setAttribute("aria-expanded", String(!$("#set-snooze-custom").hidden));
+}
+
+function snoozeTo(date) {
+  const until = date ? isoLocal(date) : null;
+  const text = date ? `${snoozeEndText(date.getTime())}까지 알림을 끕니다.` : "알림을 다시 켰습니다.";
+  return saveNotify({ snoozeUntil: until }, text);
+}
+
+function openSnoozeCustom() {
+  const box = $("#set-snooze-custom");
+  box.hidden = false;
+  const now = new Date();
+  const input = $("#set-snooze-at");
+  const local = (date) => isoLocal(date).slice(0, 16);
+  input.min = local(new Date(now.getTime() + 60000));
+  input.max = local(new Date(now.getTime() + SNOOZE_MAX_MS));
+  input.value = local(new Date(now.getTime() + 2 * 3600000));
+  renderSnoozeChoices();
+  input.focus();
+}
+
+$("#set-snooze").addEventListener("click", (event) => {
+  const kind = event.target.closest?.("[data-snooze]")?.dataset.snooze;
+  if (!kind) return;
+  if (kind === "custom") {
+    if ($("#set-snooze-custom").hidden) openSnoozeCustom();
+    else {
+      $("#set-snooze-custom").hidden = true;
+      renderSnoozeChoices();
+    }
+    return;
+  }
+  const target = snoozeTargets()[kind];
+  if (target) snoozeTo(target);
+});
+$("#set-snooze-apply").addEventListener("click", async () => {
+  const value = $("#set-snooze-at").value;
+  const date = value ? new Date(value) : null;
+  const now = Date.now();
+  if (!date || Number.isNaN(date.getTime())) {
+    setSaved("err", "다시 켤 시각을 고르세요.");
+    return;
+  }
+  if (date.getTime() < now + 60000 || date.getTime() > now + SNOOZE_MAX_MS) {
+    setSaved("err", "지금부터 7일 안의 시각을 고르세요.");
+    return;
+  }
+  if (await snoozeTo(date)) {
+    $("#set-snooze-custom").hidden = true;
+    renderSnoozeChoices();
+    $("#set-snooze-off").focus();
+  }
+});
+$("#set-snooze-off").addEventListener("click", async () => {
+  if (await snoozeTo(null)) $('#set-snooze [data-snooze="1h"]').focus();
+});
+
+/* 잠시 끄기 메뉴: 종 우클릭(또는 길게 누르기, 메뉴 키), 알림 센터의 끄기 단추 */
+let snoozeMenuOpener = null;
+
+function renderSnoozeMenu() {
+  const at = snoozeUntilMs();
+  const now = $("#snz-menu-now");
+  now.hidden = !at;
+  now.textContent = at ? `${snoozeEndText(at)}까지 꺼짐 (${snoozeLeftText(at - Date.now())} 남음)` : "";
+  $("#snz-menu-off").hidden = !at;
+  const targets = snoozeTargets();
+  $("#snz-menu-1h").textContent = `${clockOf(targets["1h"])}까지`;
+  $("#snz-menu-3h").textContent = `${clockOf(targets["3h"])}까지`;
+  $('#snooze-menu [data-snooze="today"]').disabled = !targets.today;
+}
+
+function openSnoozeMenu(opener) {
+  if (!state.me || state.locked || state.pwForced) return;
+  const menu = $("#snooze-menu");
+  snoozeMenuOpener = opener;
+  renderSnoozeMenu();
+  menu.hidden = false;
+  opener.setAttribute("aria-expanded", "true");
+  // 종이면 오른쪽에 아래 끝을 맞추고, 알림 센터의 단추면 그 아래에 둔다.
+  const rect = opener.getBoundingClientRect();
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  let left = opener.id === "rail-bell" ? rect.right + 8 : rect.right - width;
+  let top = opener.id === "rail-bell" ? rect.bottom - height : rect.bottom + 6;
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelector("button:not([hidden]):not(:disabled)")?.focus();
+}
+
+function closeSnoozeMenu({ focus = false } = {}) {
+  const menu = $("#snooze-menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  const opener = snoozeMenuOpener;
+  snoozeMenuOpener = null;
+  if (opener?.id === "center-snooze") opener.setAttribute("aria-expanded", "false");
+  if (opener?.id === "rail-bell") opener.setAttribute("aria-expanded", String(!$("#center").hidden));
+  if (focus && opener?.isConnected) opener.focus();
+}
+
+$("#snooze-menu").addEventListener("click", (event) => {
+  const button = event.target.closest?.("button");
+  if (!button || button.disabled) return;
+  const opener = snoozeMenuOpener;
+  closeSnoozeMenu();
+  if (button.id === "snz-menu-off") {
+    snoozeTo(null);
+    opener?.focus();
+    return;
+  }
+  const kind = button.dataset.snooze;
+  if (kind === "custom") {
+    openSettings("notify", { returnFocus: opener });
+    if (!snoozed()) openSnoozeCustom();
+    return;
+  }
+  const target = snoozeTargets()[kind];
+  if (target) snoozeTo(target);
+  opener?.focus();
+});
+$("#snooze-menu").addEventListener("keydown", (event) => {
+  const items = [...$("#snooze-menu").querySelectorAll("button:not([hidden]):not(:disabled)")];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSnoozeMenu({ focus: true });
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    items[(index + step + items.length) % items.length]?.focus();
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+  } else if (event.key === "Tab") {
+    closeSnoozeMenu();
+  }
+});
+document.addEventListener("click", (event) => {
+  if ($("#snooze-menu").hidden || !event.target.isConnected) return;
+  if (event.target.closest?.("#snooze-menu, #center-snooze")) return;
+  closeSnoozeMenu();
+});
+
+const bell = $("#rail-bell");
+let bellPressTimer = 0;
+let bellLongPressed = false;
+bell.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  openSnoozeMenu(bell);
+});
+// 터치: 길게 누르면 잠시 끄기 메뉴
+bell.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch") return;
+  bellLongPressed = false;
+  window.clearTimeout(bellPressTimer);
+  bellPressTimer = window.setTimeout(() => {
+    bellLongPressed = true;
+    openSnoozeMenu(bell);
+  }, 550);
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+  bell.addEventListener(type, () => window.clearTimeout(bellPressTimer));
+}
+bell.addEventListener("click", (event) => {
+  if (bellLongPressed) {
+    bellLongPressed = false;
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  toggleCenter();
+});
+$("#center-snooze").addEventListener("click", (event) => {
+  event.stopPropagation();
+  if ($("#snooze-menu").hidden) openSnoozeMenu(event.currentTarget);
+  else closeSnoozeMenu({ focus: true });
+});
+
+/* ── N6 알림 센터 ── */
+
+const ACTIVITY_TABS = { all: null, mention: ["mention"], reply: ["reply", "reaction"], notice: ["notice"] };
+const activity = { items: [], hasOlder: false, olderByKind: {}, unseen: 0, byKind: null, loading: false, error: "", tab: "all", gen: 0, loaded: false };
+const ACTIVITY_KINDS = ["mention", "reply", "reaction", "notice", "keyword"];
+
+function activityTime(item) {
+  if (typeof item?.at === "number") return item.at > 1e12 ? item.at / 1000 : item.at;
+  const ms = Date.parse(item?.at || "");
+  return Number.isFinite(ms) ? ms / 1000 : 0;
+}
+
+function setActivityUnseen(count, byKind) {
+  activity.unseen = Math.max(0, Math.floor(Number(count) || 0));
+  if (byKind && typeof byKind === "object") {
+    activity.byKind = Object.fromEntries(ACTIVITY_KINDS.map((kind) => [kind, Math.max(0, Math.floor(Number(byKind[kind]) || 0))]));
+  }
+  renderBellBadge();
+  if (!$("#center").hidden) renderCenterHead();
+}
+
+/* 로그인 직후 배지만 맞춘다(서랍을 열면 다시 읽는다). API가 없으면 조용히 넘어간다. */
+async function loadActivityCount() {
+  const session = state.sessionGen;
+  try {
+    const data = await api("GET", "/api/activity?kind=all");
+    if (session !== state.sessionGen) return;
+    setActivityUnseen(data?.unseen, data?.unseenByKind);
+  } catch {
+    // 3-B 서버 전에는 배지가 없다.
+  }
+}
+
+async function loadActivity({ older = false } = {}) {
+  const gen = ++activity.gen;
+  const session = state.sessionGen;
+  activity.loading = true;
+  activity.error = "";
+  renderCenter();
+  try {
+    const tab = activity.tab;
+    const kinds = ACTIVITY_TABS[tab] || ["all"];
+    // 더 받기: 종류마다 그 종류의 마지막 항목 다음부터(그 종류에 더 받을 것이 있을 때만)
+    const requests = kinds
+      .filter((kind) => !older || activity.olderByKind[kind])
+      .map((kind) => {
+        const query = new URLSearchParams({ kind });
+        if (older) {
+          const last = [...activity.items].reverse().find((item) => kind === "all" || item.kind === kind);
+          if (last?.id !== undefined) query.set("before", String(last.id));
+        }
+        return api("GET", `/api/activity?${query}`).then((data) => ({ kind, data }));
+      });
+    const results = await Promise.all(requests);
+    if (gen !== activity.gen || session !== state.sessionGen || tab !== activity.tab) return;
+    const olderByKind = older ? { ...activity.olderByKind } : {};
+    let merged = older ? [...activity.items] : [];
+    let last = null;
+    for (const { kind, data } of results) {
+      const items = Array.isArray(data?.items) ? data.items.filter((item) => item && item.id !== undefined) : [];
+      merged = [...merged, ...items.filter((item) => !merged.some((have) => have.id === item.id))];
+      olderByKind[kind] = Boolean(data?.hasOlder);
+      last = data;
+    }
+    // 두 종류를 합쳤으면 시각순(최신 먼저)으로 다시 세운다.
+    if (kinds.length > 1) merged.sort((a, b) => activityTime(b) - activityTime(a));
+    activity.items = merged;
+    activity.olderByKind = olderByKind;
+    activity.loadedOlder = older;
+    if (!older) activity.fresh = false;
+    activity.hasOlder = Object.values(olderByKind).some(Boolean);
+    activity.loaded = true;
+    if (last) setActivityUnseen(last.unseen, last.unseenByKind);
+  } catch (error) {
+    if (gen !== activity.gen || session !== state.sessionGen || error.status === 401) return;
+    activity.error = error.message || "알림을 불러오지 못했습니다.";
+  } finally {
+    if (gen === activity.gen) {
+      activity.loading = false;
+      renderCenter();
+    }
+  }
+}
+
+function toggleCenter() {
+  if ($("#center").hidden) openCenter();
+  else closeCenter({ focus: true });
+}
+
+function openCenter() {
+  if (!state.me || state.locked || state.pwForced) return;
+  closeSnoozeMenu();
+  closeStatusPop();
+  $("#center").hidden = false;
+  $("#rail-bell").setAttribute("aria-expanded", "true");
+  activity.tab = "all";
+  activity.items = [];
+  activity.loaded = false;
+  activity.olderByKind = {};
+  renderCenter();
+  loadActivity();
+  $(`#ctab-${activity.tab}`).focus();
+}
+
+function closeCenter({ focus = false } = {}) {
+  const drawer = $("#center");
+  if (drawer.hidden) return;
+  drawer.hidden = true;
+  closeSnoozeMenu();
+  activity.gen += 1;
+  activity.loading = false;
+  $("#rail-bell").setAttribute("aria-expanded", "false");
+  if (focus) $("#rail-bell").focus();
+}
+
+function activityInTab(item, tab) {
+  const kinds = ACTIVITY_TABS[tab];
+  return !kinds || kinds.includes(item.kind);
+}
+
+function renderCenterHead() {
+  const count = $("#center-count");
+  count.hidden = !activity.unseen;
+  count.textContent = activity.unseen > 99 ? "99+" : String(activity.unseen || "");
+  $("#center-seen").disabled = !activity.unseen && !activity.items.some((item) => !item.seen);
+  for (const tab of Object.keys(ACTIVITY_TABS)) {
+    const button = $(`#ctab-${tab}`);
+    const current = tab === activity.tab;
+    button.setAttribute("aria-selected", String(current));
+    button.tabIndex = current ? 0 : -1;
+    // 탭 숫자: 서버의 종류별 안 본 수(서랍 안에서는 잠시 끄기와 관계없이 보인다). 전체는 키워드를 포함한 합계.
+    const kinds = ACTIVITY_TABS[tab];
+    const unseen = activity.byKind
+      ? kinds ? kinds.reduce((sum, kind) => sum + (activity.byKind[kind] || 0), 0) : activity.unseen
+      : activity.items.filter((item) => !item.seen && activityInTab(item, tab)).length;
+    button.querySelector(".n").textContent = unseen ? String(unseen) : "";
+  }
+  $("#center-body").setAttribute("aria-labelledby", `ctab-${activity.tab}`);
+  const at = snoozeUntilMs();
+  $("#center-snooze").setAttribute("aria-label", at ? `알림 잠시 끄기 (${snoozeEndText(at)}까지 꺼짐)` : "알림 잠시 끄기");
+}
+
+function activityRoomName(item) {
+  if (item.view === "dm") return personById(item.userId)?.fullName || item.actorName || "1:1 대화";
+  if (item.view === "group") return groupById(item.groupId)?.name || "그룹";
+  return GENERAL_NAME;
+}
+
+function activityDayLabel(unix) {
+  if (!unix) return "";
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (dayKey(unix) === dayKey(today.getTime() / 1000)) return "오늘";
+  if (dayKey(unix) === dayKey(yesterday.getTime() / 1000)) return "어제";
+  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", weekday: "short" }).format(new Date(unix * 1000));
+}
+
+const KIND_LINES = {
+  mention: "님이 나를 멘션했습니다",
+  reply: "님이 내 글에 답장했습니다",
+  reaction: "님이 내 글에 반응을 남겼습니다",
+  notice: "님이 공지를 등록했습니다",
+};
+
+function activityItem(item) {
+  const button = el("button", item.seen ? "nitem" : "nitem unseen");
+  button.type = "button";
+  const kind = item.kind;
+  const actor = personById(item.actorId);
+  const face = item.view === "group" && kind === "notice"
+    ? (groupById(item.groupId)?.dept ? deptAvatar() : groupAvatar(false))
+    : avatar(actor || { fullName: item.actorName });
+  const mark = el("span", `kind ${kind}`);
+  mark.setAttribute("aria-hidden", "true");
+  if (kind === "mention") mark.textContent = "@";
+  else if (kind === "keyword") mark.textContent = "#";
+  else if (kind === "reaction") mark.textContent = REACTIONS.find((def) => def.key === item.emoji)?.emoji || "👍";
+  else mark.append(iconUse(kind === "reply" ? "ico-reply" : "ico-notice"));
+  face.append(mark);
+  const text = el("span", "");
+  const line = el("span", "nl");
+  const name = item.actorName || actor?.fullName || "알 수 없는 직원";
+  if (kind === "keyword") {
+    line.append("키워드가 들어간 메시지");
+    if (item.keyword) {
+      line.replaceChildren("키워드 ", el("b", "", item.keyword), "이 들어간 메시지");
+    }
+  } else {
+    line.append(el("b", "", name), ` ${KIND_LINES[kind] || "님의 새 알림"}`);
+  }
+  if (kind === "notice" && item.ackRequired) line.append(el("span", "ack-tag", "확인 요청"));
+  // 공지가 바뀌거나 내려가도 항목은 남는다(current:false). 누르면 원문으로 가는 것은 같다.
+  if (kind === "notice" && item.current === false) line.append(el("span", "past-tag", "지난 공지"));
+  const unix = activityTime(item);
+  const meta = el("span", "nmeta");
+  // 키워드는 보낸 사람도 함께 보인다(1:1이면 대화방 이름이 곧 그 사람이라 한 번만).
+  const where = kind === "keyword" && item.view !== "dm" ? `${name} · ${activityRoomName(item)}` : activityRoomName(item);
+  meta.append(el("span", "", where), "·");
+  const time = el("time", "", unix ? formatTime(unix) : "");
+  if (unix) time.dateTime = new Date(unix * 1000).toISOString();
+  meta.append(time);
+  const gone = item.excerpt === RECALLED_TEXT;
+  const excerpt = el("span", `nex ${kind === "reaction" ? "reply" : kind}${gone ? " gone" : ""}`, item.excerpt || "");
+  text.append(line, meta);
+  if (item.excerpt) text.append(excerpt);
+  button.append(face, text);
+  button.setAttribute("aria-label", [item.seen ? "" : "안 봄", line.textContent, activityRoomName(item), time.textContent, item.excerpt || ""].filter(Boolean).join(", "));
+  button.addEventListener("click", () => openActivity(item));
+  return button;
+}
+
+function renderCenter() {
+  if ($("#center").hidden) return;
+  renderCenterHead();
+  const body = $("#center-body");
+  body.setAttribute("aria-busy", String(activity.loading));
+  body.replaceChildren();
+  const items = activity.items.filter((item) => activityInTab(item, activity.tab));
+  if (activity.fresh) {
+    const fresh = el("button", "nfresh", "새 알림이 있습니다 · 다시 읽기");
+    fresh.type = "button";
+    fresh.addEventListener("click", () => {
+      $("#center-body").scrollTop = 0;
+      loadActivity();
+    });
+    body.append(fresh);
+  }
+  if (activity.error && !items.length) {
+    const box = el("div", "empty");
+    const img = document.createElement("img");
+    img.src = TURTLE;
+    img.alt = "";
+    const retry = el("button", "txt-btn", "다시 시도");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadActivity());
+    box.append(img, el("b", "", "알림을 불러오지 못했습니다"), el("span", "", activity.error), retry);
+    body.append(box);
+    return;
+  }
+  if (!items.length) {
+    if (activity.loading || !activity.loaded) {
+      body.append(el("p", "nfoot", "불러오는 중…"));
+      return;
+    }
+    const box = el("div", "empty");
+    const img = document.createElement("img");
+    img.src = TURTLE;
+    img.alt = "";
+    box.append(img, el("b", "", "새 알림이 없습니다"), el("span", "", "멘션, 내 글에 단 답장·반응, 공지가 여기에 모입니다."));
+    body.append(box);
+    if (activity.hasOlder) body.append(moreActivityButton());
+    return;
+  }
+  let day = "";
+  for (const item of items) {
+    const label = activityDayLabel(activityTime(item));
+    if (label && label !== day) {
+      day = label;
+      body.append(el("div", "ngrp", label));
+    }
+    body.append(activityItem(item));
+  }
+  if (activity.hasOlder) body.append(moreActivityButton());
+  if (activity.error) body.append(el("p", "nfoot err", activity.error));
+  body.append(el("p", "nfoot", "최근 30일 알림을 보여 줍니다."));
+}
+
+function moreActivityButton() {
+  const button = el("button", "more", activity.loading ? "불러오는 중…" : "이전 알림 더 보기");
+  button.type = "button";
+  button.disabled = activity.loading;
+  button.addEventListener("click", () => loadActivity({ older: true }));
+  return button;
+}
+
+async function openActivity(item) {
+  // 누른 항목만 본 것으로 표시한다(서버에는 ids로 알린다. 실패해도 이동은 한다).
+  if (!item.seen) {
+    item.seen = true;
+    renderCenter();
+    const session = state.sessionGen;
+    api("POST", "/api/activity/seen", { ids: [String(item.id)] })
+      .then((data) => {
+        if (session === state.sessionGen) setActivityUnseen(data?.unseen, data?.unseenByKind);
+      })
+      .catch(() => {
+        // 다음에 서랍을 열면 서버 값으로 다시 맞춘다.
+      });
+  }
+  closeCenter();
+  const message = { id: item.messageId, kind: item.view === "dm" ? "dm" : item.view === "group" ? "group" : "channel", peerId: item.userId, groupId: item.groupId };
+  if (item.view === "dm" && !personById(item.userId)) {
+    state.noteStatus = "그 대화방을 찾지 못했습니다.";
+    renderList();
+    return;
+  }
+  await openMessage(message, []);
+}
+
+async function markActivitySeen() {
+  const session = state.sessionGen;
+  const button = $("#center-seen");
+  button.disabled = true;
+  try {
+    const data = await api("POST", "/api/activity/seen", { upTo: "all" });
+    if (session !== state.sessionGen) return;
+    for (const item of activity.items) item.seen = true;
+    setActivityUnseen(data?.unseen ?? 0, data?.unseenByKind);
+    announce("알림을 모두 확인했습니다.");
+  } catch (error) {
+    if (error.status === 401 || session !== state.sessionGen) return;
+    activity.error = error.message || "확인 표시를 하지 못했습니다.";
+  }
+  renderCenter();
+}
+
+$("#center-seen").addEventListener("click", markActivitySeen);
+$("#center-close").addEventListener("click", () => closeCenter({ focus: true }));
+$("#center-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest?.("[role=tab]")?.dataset.tab;
+  if (!tab || tab === activity.tab) return;
+  switchActivityTab(tab);
+});
+
+function switchActivityTab(tab) {
+  activity.tab = tab;
+  activity.items = [];
+  activity.loaded = false;
+  activity.hasOlder = false;
+  activity.olderByKind = {};
+  activity.fresh = false;
+  renderCenter();
+  loadActivity();
+}
+$("#center-tabs").addEventListener("keydown", (event) => {
+  const tabs = Object.keys(ACTIVITY_TABS);
+  let index = tabs.indexOf(activity.tab);
+  if (event.key === "ArrowRight") index = (index + 1) % tabs.length;
+  else if (event.key === "ArrowLeft") index = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === "Home") index = 0;
+  else if (event.key === "End") index = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  switchActivityTab(tabs[index]);
+  $(`#ctab-${activity.tab}`).focus();
+});
+$("#center").addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !$("#snooze-menu").hidden) return;
+  event.stopPropagation();
+  closeCenter({ focus: true });
+});
+// 서랍 밖을 누르면 닫는다(종·잠시 끄기 메뉴·대화상자는 빼고).
+document.addEventListener("click", (event) => {
+  if ($("#center").hidden || !event.target.isConnected) return;
+  if (event.target.closest?.("#center, #rail-bell, #snooze-menu, dialog")) return;
+  closeCenter();
+});
 
 /* 방해 금지 시간인가(주말 종일 포함). 시작 > 끝이면 자정을 넘긴다. */
 function dndActive(now = new Date()) {
@@ -5416,6 +7588,12 @@ $("#sched-form").addEventListener("submit", async (event) => {
 
 wireMenu("#send-menu", "#send-more");
 $("#send-later").addEventListener("click", () => openSchedDialog());
+$("#send-urgent").addEventListener("click", () => {
+  closeMenu("#send-menu", "#send-more");
+  if (urgentMode()) setUrgent(false);
+  else if (canSendUrgent()) setUrgent(true);
+});
+$("#urgent-cancel").addEventListener("click", () => setUrgent(false));
 $("#send-list").addEventListener("click", () => {
   closeMenu("#send-menu", "#send-more");
   if (toggleSchedList(true)) $("#sched-list").querySelector("button")?.focus();
@@ -5599,6 +7777,7 @@ function renderViewer() {
   const { file, message } = item;
   const url = safeFileUrl(file.url);
   const img = $("#viewer-img");
+  if (url) shownImages.add(url);
   img.src = url ? inlineUrl(url) : "";
   img.alt = file.name || "사진";
   $("#viewer-name").textContent = file.name || "사진";
@@ -5620,11 +7799,18 @@ function renderViewer() {
       button.type = "button";
       button.setAttribute("aria-label", `${index + 1}번째 사진`);
       if (index === viewer.index) button.setAttribute("aria-current", "true");
-      const thumb = document.createElement("img");
-      thumb.src = inlineUrl(entry.file.url);
-      thumb.alt = "";
-      thumb.loading = "lazy";
-      button.append(thumb);
+      const entryUrl = safeFileUrl(entry.file.url);
+      if (state.prefs?.chat?.autoShowImages === false && !shownImages.has(entryUrl)) {
+        // 아직 열지 않은 사진은 받지 않고 자리만 둔다(누르면 그 사진을 연다).
+        button.classList.add("hold");
+        button.append(iconUse("ico-eye"));
+      } else {
+        const thumb = document.createElement("img");
+        thumb.src = inlineUrl(entry.file.url);
+        thumb.alt = "";
+        thumb.loading = "lazy";
+        button.append(thumb);
+      }
       button.addEventListener("click", () => stepViewer(index - viewer.index));
       strip.append(button);
     });
@@ -5742,9 +7928,17 @@ function lockKey() {
   return state.me ? `sangsangtalk.lock.${state.me.userId}` : "";
 }
 
-function autoLockMinutes() {
+function adminLockMinutes() {
   const minutes = Number(state.me?.autoLockMinutes);
   return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+}
+
+function autoLockMinutes() {
+  const admin = adminLockMinutes();
+  const mine = state.prefs?.lock?.minutes;
+  if (!Number.isInteger(mine)) return admin;
+  if (admin > 0) return mine > 0 ? Math.min(admin, mine) : admin;
+  return mine > 0 ? mine : 0;
 }
 
 function startLockWatch() {
@@ -5752,7 +7946,7 @@ function startLockWatch() {
   if (!autoLockMinutes()) return;
   lockTimer = window.setInterval(() => {
     if (!state.me || state.locked) return;
-    if (Date.now() - lastInputAt >= autoLockMinutes() * 60 * 1000) lockScreen();
+    if (Date.now() - lastInputAt >= autoLockMinutes() * 60 * 1000) lockScreen({ reason: "idle" });
   }, 15 * 1000);
 }
 
@@ -5761,7 +7955,8 @@ function stopLockWatch() {
   lockTimer = 0;
 }
 
-function lockScreen({ fromServer = false } = {}) {
+/* reason: "idle"(자동 잠금)일 때만 "N분 동안 사용하지 않아" 문구. 직접·서버·다른 탭 잠금은 일반 문구. */
+function lockScreen({ fromServer = false, reason = "other" } = {}) {
   if (!state.me || state.locked || state.pwForced) return;
   state.locked = true;
   // 서버가 잠긴 동안 다른 API를 막는다(여러 탭·관리자 화면도 같은 상태가 된다).
@@ -5773,11 +7968,13 @@ function lockScreen({ fromServer = false } = {}) {
   }
   // 대화상자는 맨 위 층이라 잠금 화면 위에 뜨므로 모두 닫는다.
   confirmResolve?.(false);
-  for (const id of ["#chooser", "#note-dialog", "#group-dialog", "#leave-dialog", "#confirm-dialog", "#viewer", "#sched-dialog", "#widget-dialog"]) {
+  for (const id of ["#chooser", "#note-dialog", "#group-dialog", "#leave-dialog", "#confirm-dialog", "#viewer", "#sched-dialog", "#widget-dialog", "#settings", "#notice-dialog"]) {
     const dialog = $(id);
     if (dialog?.open) dialog.close();
   }
   closeStatusPop();
+  closeSnoozeMenu();
+  closeCenter();
   closeMsgMenu();
   closeReaders();
   closePicker();
@@ -5788,7 +7985,9 @@ function lockScreen({ fromServer = false } = {}) {
   closeMenu("#plus-menu", "#composer-plus");
   $("#chat-view").inert = true;
   const minutes = autoLockMinutes();
-  $("#lock-why").textContent = `${minutes ? `${minutes}분 동안 사용하지 않아` : "자리를 비워"} 화면을 잠갔습니다.\n비밀번호를 입력하면 이어서 쓸 수 있어요.`;
+  $("#lock-why").textContent = reason === "idle" && minutes
+    ? `${minutes}분 동안 사용하지 않아 화면을 잠갔습니다.\n비밀번호를 입력하면 이어서 쓸 수 있어요.`
+    : "화면이 잠겼습니다.\n비밀번호를 입력해 잠금을 푸세요.";
   const self = personById(state.me.userId);
   $("#lock-name").textContent = state.me.fullName || state.me.email || "";
   $("#lock-sub").textContent = mySubtitle() || (self ? personTitle(self) : "");
@@ -5827,6 +8026,15 @@ function resumeAfterBlock() {
     openBlockedStartHash();
     return;
   }
+  // 막힌 채 시작했으면 아무것도 읽지 못했으므로 처음 로드를 다시 한다.
+  if (state.startBlocked) {
+    reloadAll().then(() => runDeferredHash());
+    return;
+  }
+  // 잠긴 동안 바뀌었을 수 있는 설정·알림 수는 다시 맞춘다.
+  loadPrefs();
+  loadActivityCount();
+  refreshNoteIndex();
   markOpenRead();
   if (isTalkView()) loadMessages({ quiet: true });
   loadTalkPreviews();
@@ -5943,7 +8151,7 @@ function openPasswordChange({ forced = false } = {}) {
   if (!state.me) return;
   closeStatusPop();
   state.pwForced = forced;
-  for (const id of ["#chooser", "#note-dialog", "#group-dialog", "#leave-dialog", "#viewer", "#sched-dialog", "#widget-dialog"]) {
+  for (const id of ["#chooser", "#note-dialog", "#group-dialog", "#leave-dialog", "#viewer", "#sched-dialog", "#widget-dialog", "#settings", "#notice-dialog"]) {
     const dialog = $(id);
     if (dialog?.open) dialog.close();
   }
@@ -6010,7 +8218,7 @@ $("#pw-form").addEventListener("submit", async (event) => {
     showToast("비밀번호를 바꿨습니다.");
     if (forced) {
       lastInputAt = Date.now();
-      if (!(await openBlockedStartHash())) loadDirectory();
+      if (!(await openBlockedStartHash())) await reloadAll();
       runDeferredHash();
       if (isTalkView()) $("#composer-input")?.focus();
       else $("#rail-talk").focus();
@@ -6447,9 +8655,28 @@ for (const button of document.querySelectorAll("[data-note-filter]")) {
   });
 }
 
+function enterSends() {
+  return state.prefs?.chat?.enterSends !== false;
+}
+
+function sendKeyLabel() {
+  return enterSends() ? "Enter" : "Ctrl+Enter";
+}
+
+/* 입력창 아래 안내 문구도 보내기 키를 따른다. */
+function renderSendHints() {
+  if (!state.compose) $("#composer-hint").textContent = `끌어다 놓거나 붙여넣어도 됩니다 · ${sendKeyLabel()} 전송`;
+  else renderCompose();
+  const note = $("#note-hint");
+  if (note) note.textContent = `끌어다 놓거나 붙여넣어도 됩니다 · ${sendKeyLabel()} 전송`;
+}
+
 function wireComposer(form, input, refresh) {
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+    // P3: Enter로 보내기(Shift+Enter 줄 바꿈) 또는 Ctrl+Enter로 보내기(Enter 줄 바꿈)
+    const send = enterSends() ? !event.shiftKey && !event.ctrlKey && !event.metaKey : event.ctrlKey || event.metaKey;
+    if (send) {
       event.preventDefault();
       form.requestSubmit();
     }
@@ -6562,6 +8789,11 @@ async function sendMessage(content, attachments) {
   if (reply) body.replyToId = reply.id;
   const mentions = mentionIdsIn(content);
   if (mentions.length) body.mentions = mentions;
+  const urgent = urgentMode();
+  if (urgent) {
+    body.urgent = true;
+    state.urgent.error = "";
+  }
   const session = state.sessionGen;
   const input = $("#composer-input");
   const typed = input.value;
@@ -6576,6 +8808,8 @@ async function sendMessage(content, attachments) {
     const data = await api("POST", "/api/messages", body);
     if (session !== state.sessionGen) return;
     if (state.compose?.mode === "reply" && state.compose.key === requestedKey) setCompose(null);
+    // 보내고 나면 보통으로 돌아온다.
+    if (urgent && state.urgent?.key === requestedKey) state.urgent = null;
     if (convKey() === requestedKey) {
       composerUploader.remove(attachments);
       const echoed = data.message && state.messages.find((message) => message.id === data.message.id);
@@ -6588,7 +8822,11 @@ async function sendMessage(content, attachments) {
     }
   } catch (error) {
     if (error.status === 401 || session !== state.sessionGen) return;
-    state.sendErrors[requestedKey] = error.message || "메시지를 보내지 못했습니다.";
+    if (urgent && state.urgent?.key === requestedKey && (error.status === 429 || error.status === 403)) {
+      state.urgent.error = error.message || "중요 메시지를 보내지 못했습니다.";
+    } else {
+      state.sendErrors[requestedKey] = error.message || "메시지를 보내지 못했습니다.";
+    }
     if (convKey() === requestedKey) {
       if (!input.value.trim()) {
         input.value = typed;

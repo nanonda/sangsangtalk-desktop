@@ -35,6 +35,7 @@
       <symbol id="ico-smile-add" viewBox="0 0 24 24"><circle cx="11" cy="12" r="7"/><path d="M8.5 14c.6.8 1.4 1.2 2.5 1.2M8.8 10h.01M13.2 10h.01M19 3v5M16.5 5.5h5"/></symbol>
       <symbol id="ico-star" viewBox="0 0 24 24"><path d="m12 3.8 2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8Z"/></symbol>
       <symbol id="ico-bell-off" viewBox="0 0 24 24"><path d="M9 18.5a3 3 0 0 0 6 0M6 9.5a6 6 0 0 1 9.4-4.9M18 11v3l1.5 2.5H8M4 4l16 16"/></symbol>
+      <symbol id="ico-warn" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.3"/></symbol>
       <symbol id="ico-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9Z"/><path d="M10 19.5a2 2 0 0 0 4 0"/></symbol>
       <symbol id="ico-folder" viewBox="0 0 24 24"><path d="M4 7.5A1.5 1.5 0 0 1 5.5 6H10l2 2h6.5A1.5 1.5 0 0 1 20 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/></symbol>
       <symbol id="ico-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol>
@@ -93,10 +94,10 @@
         <svg class="i" aria-hidden="true"><use href="#ico-star"/></svg>별표
       </button>
       <div class="rail-spacer"></div>
-      <button type="button" class="rail-btn" disabled title="준비 중">
-        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9Z"/><path d="M10 19.5a2 2 0 0 0 4 0"/></svg>알림
+      <button type="button" class="rail-btn" id="rail-bell" aria-haspopup="dialog" aria-expanded="false" aria-controls="center" title="알림 · 우클릭하면 잠시 끄기">
+        <svg class="i" aria-hidden="true"><use href="#ico-bell"/></svg><span id="bell-label">알림</span><span class="badge" id="bell-badge" hidden></span><span class="snz" id="bell-left" hidden></span>
       </button>
-      <button type="button" class="rail-btn" disabled title="준비 중">
+      <button type="button" class="rail-btn" id="rail-settings" aria-haspopup="dialog">
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.4A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z"/></svg>설정
       </button>
       <button type="button" class="rail-btn" id="logout">
@@ -112,7 +113,7 @@
 
     <!-- B2 내 상태(+ B5 방해 금지) -->
     <div class="status-pop" id="status-pop" role="dialog" aria-labelledby="sp-name" hidden>
-      <div class="who"><img src="/assets/turtle-front.png" alt=""><div><b id="sp-name"></b><small id="sp-title"></small></div></div>
+      <div class="who"><img id="sp-pic" src="/assets/turtle-front.png" alt=""><div><b id="sp-name"></b><small id="sp-title"></small></div></div>
       <h4>자동 상태</h4>
       <div class="auto"><span class="dot" id="sp-dot" aria-hidden="true"></span><span class="st" id="sp-auto"></span><small>컴퓨터 사용에 따라 자동으로 바뀝니다</small></div>
       <h4 id="sp-now-h">지금 하는 일</h4>
@@ -123,8 +124,7 @@
         <div class="help"><span>목록과 대화창에 함께 보입니다.</span><span id="sp-count">0/40</span></div>
       </div>
       <h4>알림</h4>
-      <div class="sw"><div><b>방해 금지</b><small id="sp-dnd-sum"></small></div><button type="button" class="toggle" id="sp-dnd" role="switch" aria-checked="false" aria-label="방해 금지"></button></div>
-      <div class="dnd-time" id="sp-dnd-time"><input type="time" id="sp-from" aria-label="방해 금지 시작" value="18:00">~<input type="time" id="sp-to" aria-label="방해 금지 끝" value="09:00"><label class="wk"><input type="checkbox" class="cb" id="sp-weekends">주말 종일</label></div>
+      <div class="sw"><div><b>방해 금지</b><small id="sp-dnd-sum"></small></div><button type="button" class="link-btn" id="sp-notify-settings">알림 설정</button></div>
       <p class="alert" id="sp-error" role="alert"></p>
       <div class="sp-links"><button type="button" class="link-btn" id="sp-password">비밀번호 바꾸기</button><a class="link-btn" id="sp-admin" href="/admin" hidden>관리자 화면</a></div>
       <footer><button type="button" class="btn ghost" id="sp-cancel">취소</button><button type="button" class="btn primary" id="sp-save">저장</button></footer>
@@ -225,8 +225,11 @@
       <section class="notice-bar" id="notice-bar" aria-label="공지" hidden>
         <div class="nb-row">
           <span class="nb-ic" aria-hidden="true"><svg class="i"><use href="#ico-notice"/></svg></span>
-          <span class="lbl">공지</span>
+          <span class="lbl">공지</span><span class="ack-tag" id="notice-ack-tag" hidden>확인 요청</span>
           <button type="button" class="txt" id="notice-text" aria-expanded="false" aria-controls="notice-more"></button>
+          <button type="button" class="ack-btn" id="notice-ack" hidden>확인</button>
+          <span class="acked" id="notice-acked" tabindex="-1" hidden><svg class="i" aria-hidden="true"><use href="#ico-check"/></svg>확인함</span>
+          <button type="button" class="ack-count" id="notice-acks" aria-haspopup="dialog" aria-expanded="false" hidden><span id="notice-acks-text"></span><svg class="i" aria-hidden="true"><use href="#ico-chev-down"/></svg></button>
           <button type="button" class="icon-btn" id="notice-toggle" aria-label="공지 펼치기" aria-expanded="false" aria-controls="notice-more"><svg class="i chev-ic" aria-hidden="true"><use href="#ico-chev-down"/></svg></button>
           <button type="button" class="icon-btn" id="notice-dismiss" aria-label="공지 닫기(내 화면에서만)" title="내 화면에서만 닫습니다"><svg class="i" aria-hidden="true"><use href="#ico-x"/></svg></button>
         </div>
@@ -264,6 +267,11 @@
           <div id="mention-list" role="listbox" aria-label="멘션할 직원"></div>
           <div class="ft">↑↓ 고르기 · Enter 넣기 · Esc 닫기</div>
         </div>
+        <div class="urgent-ctx" id="urgent-ctx" hidden>
+          <svg class="i" aria-hidden="true"><use href="#ico-warn"/></svg>
+          <div><b>중요 메시지로 보냅니다</b><span id="urgent-ctx-text"></span></div>
+          <button type="button" class="icon-btn" id="urgent-cancel" aria-label="중요 메시지 취소"><svg class="i" aria-hidden="true"><use href="#ico-x"/></svg></button>
+        </div>
         <div class="ctx" id="compose-ctx" hidden>
           <svg class="i" aria-hidden="true"><use id="compose-ctx-icon" href="#ico-reply"/></svg>
           <div><b id="compose-ctx-title"></b><span id="compose-ctx-text"></span></div>
@@ -293,6 +301,9 @@
             <span class="menu compact send-menu" id="send-menu" role="menu" aria-label="보내기 옵션" hidden>
               <button type="button" role="menuitem" id="send-later"><svg class="i" aria-hidden="true"><use href="#ico-clock"/></svg>예약 보내기…</button>
               <button type="button" role="menuitem" id="send-list"><svg class="i" aria-hidden="true"><use href="#ico-list"/></svg>예약한 메시지 보기<span class="on" id="send-list-n"></span></button>
+              <hr id="send-urgent-sep">
+              <button type="button" role="menuitem" class="urgent-item" id="send-urgent"><svg class="i" aria-hidden="true"><use href="#ico-warn"/></svg><span><span id="send-urgent-label">중요 메시지로 보내기</span><small id="send-urgent-sub">방해 금지 중에도 소리와 함께 알립니다</small></span></button>
+              <div class="why" id="send-urgent-why" hidden>전체 대화방의 중요 메시지는 관리자만 보낼 수 있습니다.</div>
             </span>
           </span>
         </div>
@@ -307,7 +318,7 @@
             <svg class="i" aria-hidden="true"><use href="#ico-clip"/></svg>파일
           </button>
           <p id="note-thread-error" class="alert" role="alert"></p>
-          <span class="hint">끌어다 놓거나 붙여넣어도 됩니다 · Enter 전송</span>
+          <span class="hint" id="note-hint">끌어다 놓거나 붙여넣어도 됩니다 · Enter 전송</span>
           <button id="note-thread-send" class="send" type="submit" disabled>
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4 9.5 14.5M20 4l-6.5 16-4-5.5L4 10.5Z"/></svg><span>전송</span>
           </button>
@@ -479,6 +490,257 @@
       <div class="alt"><button type="button" id="lock-logout">로그아웃하고 다른 계정으로</button></div>
     </form>
   </div>
+  <!-- N8 공지로 등록 -->
+  <dialog id="notice-dialog" class="v2" aria-labelledby="notice-dlg-title" aria-describedby="notice-dlg-sub">
+    <form id="notice-form" novalidate>
+      <header>
+        <div><h2 id="notice-dlg-title">공지로 등록</h2><p id="notice-dlg-sub"></p></div>
+        <button type="button" class="icon-btn" id="notice-dlg-close" aria-label="닫기"><svg class="i" aria-hidden="true"><use href="#ico-x"/></svg></button>
+      </header>
+      <div class="bd">
+        <div class="preview-line wrap" id="notice-dlg-preview"></div>
+        <label class="chk-card"><input type="checkbox" class="cb" id="notice-dlg-ack"><span><b>확인 요청</b><small>받는 사람에게 "확인" 버튼을 보여 주고, 누가 확인했는지 볼 수 있습니다. 알림 센터에도 들어갑니다.</small></span></label>
+        <p id="notice-dlg-error" class="alert" role="alert"></p>
+      </div>
+      <footer>
+        <button type="button" class="btn ghost" id="notice-dlg-cancel">취소</button>
+        <button type="submit" class="btn primary" id="notice-dlg-submit">등록</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- 3단계 S1 설정 (design/main-screen-v4.html) -->
+  <dialog id="settings" class="settings" aria-label="설정">
+    <nav class="snav" id="set-tabs" role="tablist" aria-orientation="vertical" aria-label="설정 분류">
+      <h2>설정</h2>
+      <button type="button" role="tab" id="set-tab-me" aria-controls="set-me" data-tab="me"><svg class="i" aria-hidden="true"><use href="#ico-person"/></svg>내 정보</button>
+      <button type="button" role="tab" id="set-tab-notify" aria-controls="set-notify" data-tab="notify"><svg class="i" aria-hidden="true"><use href="#ico-bell"/></svg>알림</button>
+      <button type="button" role="tab" id="set-tab-display" aria-controls="set-display" data-tab="display"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none"/></svg>화면</button>
+      <button type="button" role="tab" id="set-tab-chat" aria-controls="set-chat" data-tab="chat"><svg class="i" aria-hidden="true"><use href="#ico-chat"/></svg>대화</button>
+      <button type="button" role="tab" id="set-tab-security" aria-controls="set-security" data-tab="security"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9V6Z"/><path d="m9 12 2 2 4-4"/></svg>보안·개인정보</button>
+      <button type="button" role="tab" id="set-tab-app" aria-controls="set-app" data-tab="app" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></svg>PC 앱</button>
+      <div class="ver"><b>상상톡</b><br><span id="set-version"></span></div>
+    </nav>
+    <div class="spane">
+      <header>
+        <h3 id="set-pane-title">알림</h3>
+        <span class="saved" id="set-saved" role="status" hidden></span>
+        <button type="button" class="icon-btn" id="set-close" aria-label="설정 닫기"><svg class="i" aria-hidden="true"><use href="#ico-x"/></svg></button>
+      </header>
+      <div class="sbody">
+        <!-- 내 정보 -->
+        <section role="tabpanel" id="set-me" aria-labelledby="set-tab-me" tabindex="-1">
+          <div class="profile">
+            <img id="set-pic" src="/assets/turtle-front.png" alt="내 프로필 사진">
+            <div><b id="set-name"></b><small id="set-org"></small>
+              <span class="soon"><button type="button" class="btn line sm" id="set-pic-change">사진 바꾸기</button><button type="button" class="btn ghost sm" id="set-pic-reset" hidden>기본 사진으로</button><span class="note">PNG·JPG, 5MB까지</span></span>
+              <input type="file" id="set-pic-file" accept="image/png,image/jpeg" hidden>
+              <div class="err-line" id="set-pic-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>인사 정보 <span class="policy"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>관리자가 관리합니다</span></h4>
+            <dl class="kv"><dt>이름</dt><dd id="set-kv-name"></dd><dt>부서</dt><dd id="set-kv-dept"></dd><dt>직책</dt><dd id="set-kv-pos"></dd><dt>로그인 ID</dt><dd id="set-kv-id"></dd></dl>
+          </div>
+          <div class="sgroup">
+            <h4>비밀번호</h4>
+            <div class="srow" id="set-pw-closed"><span class="lb"><b>비밀번호 바꾸기</b><small>현재 비밀번호를 확인한 뒤 바꿉니다.</small></span><button type="button" class="btn line sm" id="set-pw-open">바꾸기</button></div>
+            <form class="pwform" id="set-pw-form" novalidate hidden>
+              <div class="field"><label for="set-pw-old">현재 비밀번호</label><input id="set-pw-old" type="password" autocomplete="current-password"></div>
+              <div class="field"><label for="set-pw-new">새 비밀번호</label><input id="set-pw-new" type="password" autocomplete="new-password" aria-describedby="set-pw-help"><div class="help" id="set-pw-help">8자 이상. 쉬운 비밀번호는 서버가 받지 않을 수 있습니다.</div></div>
+              <div class="field"><label for="set-pw-confirm">새 비밀번호 확인</label><input id="set-pw-confirm" type="password" autocomplete="new-password"></div>
+              <div class="err-line" id="set-pw-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div>
+              <div class="acts"><button type="submit" class="btn primary sm" id="set-pw-submit">비밀번호 바꾸기</button><button type="button" class="btn ghost sm" id="set-pw-cancel">취소</button></div>
+            </form>
+          </div>
+        </section>
+
+        <!-- 알림 -->
+        <section role="tabpanel" id="set-notify" aria-labelledby="set-tab-notify" tabindex="-1" hidden>
+          <div class="sgroup">
+            <h4 id="set-snooze-h">잠시 알림 끄기</h4>
+            <p class="desc">끈 동안에는 멘션도 알리지 않습니다. 중요 메시지만 알립니다.</p>
+            <div class="snz-on" id="set-snz-on" hidden><svg class="i" aria-hidden="true"><use href="#ico-bell-off"/></svg><span id="set-snooze-state"></span><button type="button" class="txt-btn" id="set-snooze-off">다시 켜기</button></div>
+            <div class="srow" id="set-snz-pick"><span class="segs" id="set-snooze" role="group" aria-labelledby="set-snooze-h">
+              <button type="button" data-snooze="1h" id="set-snz-1h">1시간</button><button type="button" data-snooze="3h" id="set-snz-3h">3시간</button><button type="button" data-snooze="today" id="set-snz-today">오늘 하루</button><button type="button" data-snooze="custom" aria-expanded="false" aria-controls="set-snooze-custom">직접 입력</button>
+            </span></div>
+            <div class="snz-custom" id="set-snooze-custom" hidden>
+              <input type="datetime-local" class="inp" id="set-snooze-at" aria-label="알림을 다시 켤 시각">
+              <button type="button" class="btn primary sm" id="set-snooze-apply">이때까지 끄기</button>
+              <span class="note">최대 7일 뒤까지</span>
+            </div>
+          </div>
+
+          <div class="sgroup">
+            <h4 id="set-preview-h">알림 미리 보기 <span class="policy" id="set-preview-lock" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>기관 정책으로 고정됨</span></h4>
+            <p class="desc" id="set-preview-desc">Windows 알림 팝업에 무엇을 보여 줄지 고릅니다.</p>
+            <div class="rcards" id="set-preview" role="radiogroup" aria-labelledby="set-preview-h">
+              <button type="button" class="rcard" role="radio" aria-checked="false" data-pv="full"><b>전체</b><span class="toast-mini" aria-hidden="true"><span class="app"><img src="/assets/emblem.png" alt="">상상톡</span><b>홍길동 · 홍보 협업방</b><span>회의 자료 확인 부탁드려요.</span></span></button>
+              <button type="button" class="rcard" role="radio" aria-checked="false" data-pv="name"><b>이름만</b><span class="toast-mini" aria-hidden="true"><span class="app"><img src="/assets/emblem.png" alt="">상상톡</span><b>홍길동 · 홍보 협업방</b><span>새 메시지</span></span></button>
+              <button type="button" class="rcard" role="radio" aria-checked="false" data-pv="none"><b>숨김</b><span class="toast-mini" aria-hidden="true"><span class="app"><img src="/assets/emblem.png" alt="">상상톡</span><b>상상톡</b><span>새 메시지가 왔습니다</span></span></button>
+            </div>
+          </div>
+
+          <div class="sgroup">
+            <h4>소리와 작업표시줄</h4>
+            <div class="srow" id="set-sound-row"><span class="lb"><b><label for="set-sound">알림음</label></b><small>Windows 알림 소리 중에서 고릅니다.</small></span>
+              <select class="sel" id="set-sound"><option value="default">기본 소리</option><option value="im">메신저</option><option value="mail">메일</option><option value="reminder">미리 알림</option><option value="none">소리 없음</option></select>
+              <button type="button" class="btn line sm" id="set-sound-test">소리 들어 보기</button></div>
+            <div class="srow" id="set-sound-web" hidden><span class="lb"><b>알림음</b><small>브라우저에서는 알림음을 고를 수 없습니다. PC 앱에서 고르세요.</small></span></div>
+            <div class="srow" id="set-flash-row"><span class="lb"><b>작업표시줄 깜박임</b><small>창이 뒤에 있을 때 새 알림이 오면 작업표시줄 아이콘을 깜박입니다.</small></span><button type="button" class="toggle" id="set-flash" role="switch" aria-checked="true" aria-label="작업표시줄 깜박임"></button></div>
+            <div class="srow"><span class="lb"><b>내 글에 단 답장은 알림 끈 방에서도 받기</b><small>멘션은 항상 받습니다.</small></span><button type="button" class="toggle" id="set-reply" role="switch" aria-checked="true" aria-label="내 글에 단 답장은 알림 끈 방에서도 받기"></button></div>
+          </div>
+
+          <div class="sgroup" id="set-kw-group" hidden>
+            <h4 id="set-kw-h">키워드 알림</h4>
+            <p class="desc">이 단어가 들어간 메시지는 멘션처럼 알립니다. 알림 끈 방에서도 알리고, 방해 금지 중에는 알리지 않습니다.</p>
+            <div class="kws" id="set-kws" role="list" aria-labelledby="set-kw-h"></div>
+            <form class="kw-add" id="set-kw-form" novalidate><input class="inp" id="set-kw-input" maxlength="30" autocomplete="off" placeholder="키워드 입력 (2~30자)" aria-label="새 키워드"><button type="submit" class="btn line sm" id="set-kw-add">추가</button><span class="note" id="set-kw-count"></span></form>
+            <div class="err-line" id="set-kw-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div>
+          </div>
+
+          <div class="sgroup">
+            <h4>방해 금지</h4>
+            <div class="srow"><span class="lb"><b>정해진 시간에 알림 끄기</b><small id="set-dnd-sum"></small></span><button type="button" class="toggle" id="set-dnd" role="switch" aria-checked="false" aria-label="정해진 시간에 알림 끄기"></button></div>
+            <div class="dnd-row" id="set-dnd-time"><input type="time" id="set-from" aria-label="방해 금지 시작" value="18:00">~<input type="time" id="set-to" aria-label="방해 금지 끝" value="09:00"><label><input type="checkbox" class="cb" id="set-weekends">주말 종일</label></div>
+          </div>
+
+          <div class="sgroup">
+            <h4 id="set-muted-h">알림 끈 대화방 <span class="note" id="set-muted-n"></span></h4>
+            <div class="mrooms" id="set-muted" role="list" aria-labelledby="set-muted-h"></div>
+            <p class="desc" id="set-muted-empty" hidden>알림을 끈 대화방이 없습니다. 대화방 메뉴의 "알림 끄기"로 끌 수 있습니다.</p>
+          </div>
+        </section>
+
+        <!-- P2 화면 -->
+        <section role="tabpanel" id="set-display" aria-labelledby="set-tab-display" tabindex="-1" hidden>
+          <div class="sgroup">
+            <h4 id="set-theme-h">테마</h4>
+            <div class="tcards" id="set-theme" role="radiogroup" aria-labelledby="set-theme-h" data-pref="display.theme">
+              <button type="button" class="tcard" role="radio" aria-checked="false" data-v="system"><span class="tprev sys" aria-hidden="true"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>시스템 설정</b></button>
+              <button type="button" class="tcard" role="radio" aria-checked="false" data-v="light"><span class="tprev light" aria-hidden="true"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>밝게</b></button>
+              <button type="button" class="tcard" role="radio" aria-checked="false" data-v="dark"><span class="tprev dark" aria-hidden="true"><i class="r"></i><span class="c"><i></i><i class="me"></i><i></i></span></span><b>어둡게</b></button>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4 id="set-font-h">글자 크기</h4>
+            <p class="desc">메시지, 대화방 목록, 입력창 글자에 적용됩니다.</p>
+            <span class="segs" id="set-font" role="radiogroup" aria-labelledby="set-font-h" data-pref="display.fontSize"><button type="button" role="radio" aria-checked="false" data-v="small">작게</button><button type="button" role="radio" aria-checked="false" data-v="normal">보통</button><button type="button" role="radio" aria-checked="false" data-v="large">크게</button></span>
+            <div class="fs-sample" aria-hidden="true"><div class="bubble">축제 홍보물 2차 시안 오늘 오후에 공유하겠습니다.</div></div>
+          </div>
+          <div class="sgroup">
+            <h4 id="set-density-h">대화창 밀도</h4>
+            <div class="dcards" id="set-density" role="radiogroup" aria-labelledby="set-density-h" data-pref="display.density">
+              <button type="button" class="tcard" role="radio" aria-checked="false" data-v="comfortable"><span class="dprev" aria-hidden="true"><span></span><span></span><span></span></span><b>보통</b></button>
+              <button type="button" class="tcard" role="radio" aria-checked="false" data-v="compact"><span class="dprev compact" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span><b>좁게 <small>한 화면에 더 많이</small></b></button>
+            </div>
+          </div>
+        </section>
+
+        <!-- P3 대화 -->
+        <section role="tabpanel" id="set-chat" aria-labelledby="set-tab-chat" tabindex="-1" hidden>
+          <div class="sgroup">
+            <h4 id="set-enter-h">보내기 키</h4>
+            <div class="radios" id="set-enter" role="radiogroup" aria-labelledby="set-enter-h">
+              <label class="radio"><input type="radio" name="set-enter" value="enter"><kbd class="k">Enter</kbd>로 보내기<small>줄 바꿈은 Shift+Enter</small></label>
+              <label class="radio"><input type="radio" name="set-enter" value="ctrl"><kbd class="k">Ctrl</kbd>+<kbd class="k">Enter</kbd>로 보내기<small>줄 바꿈은 Enter</small></label>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>사진</h4>
+            <div class="srow"><span class="lb"><b>사진 자동으로 보기</b><small>끄면 "사진 보기"를 누르기 전에는 사진을 받지 않습니다. 파일 모아 보기에서는 사진이 보입니다.</small></span><button type="button" class="toggle" id="set-autoimg" role="switch" aria-checked="true" aria-label="사진 자동으로 보기"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4 id="set-sort-h">대화방 목록 정렬</h4>
+            <p class="desc">즐겨찾기한 대화방은 항상 맨 위에 둡니다.</p>
+            <span class="segs" id="set-sort" role="radiogroup" aria-labelledby="set-sort-h" data-pref="chat.roomSort"><button type="button" role="radio" aria-checked="false" data-v="recent">최근 대화순</button><button type="button" role="radio" aria-checked="false" data-v="name">이름순</button></span>
+          </div>
+        </section>
+
+        <!-- P4 보안·개인정보 -->
+        <section role="tabpanel" id="set-security" aria-labelledby="set-tab-security" tabindex="-1" hidden>
+          <div class="sgroup">
+            <h4>자동 잠금과 자리 비움</h4>
+            <div class="srow"><span class="lb"><b><label for="set-lock">자동 잠금</label></b><small id="set-lock-desc"></small></span><select class="sel" id="set-lock"></select></div>
+            <div class="srow"><span class="lb"><b><label for="set-away">자동 자리 비움</label></b><small>이 시간 동안 입력이 없으면 상태를 "자리 비움"으로 바꿉니다.</small></span>
+              <select class="sel" id="set-away"><option value="5">5분</option><option value="10">10분</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option></select></div>
+          </div>
+          <div class="sgroup" id="set-privacy-group">
+            <h4>공개 설정</h4>
+            <p class="desc">끄면 그 정보가 다른 사람에게 보이지 않습니다.</p>
+            <div class="srow"><span class="lb"><b>읽음 확인 보내기</b><small>끄면 내가 읽어도 상대 화면의 안 읽은 사람 수가 줄지 않습니다.</small></span><button type="button" class="toggle" id="set-pv-readReceipts" data-privacy="readReceipts" role="switch" aria-checked="true" aria-label="읽음 확인 보내기"></button></div>
+            <div class="srow"><span class="lb"><b>접속 상태 공개</b><small>끄면 다른 사람에게 항상 "오프라인"으로 보입니다.</small></span><button type="button" class="toggle" id="set-pv-presence" data-privacy="presence" role="switch" aria-checked="true" aria-label="접속 상태 공개"></button></div>
+            <div class="srow"><span class="lb"><b>입력 중 표시 보내기</b><small>끄면 내가 입력하는 동안 "입력 중"이 보이지 않습니다.</small></span><button type="button" class="toggle" id="set-pv-typing" data-privacy="typing" role="switch" aria-checked="true" aria-label="입력 중 표시 보내기"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4 id="set-sess-h">내 로그인 목록</h4>
+            <div class="sess" id="set-sessions" role="list" aria-labelledby="set-sess-h"></div>
+            <button type="button" class="btn line sm danger" id="set-sess-others">다른 곳에서 모두 로그아웃</button>
+            <div class="err-line" id="set-sess-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div>
+          </div>
+        </section>
+
+        <!-- P5 PC 앱(데스크톱만) -->
+        <section role="tabpanel" id="set-app" aria-labelledby="set-tab-app" tabindex="-1" hidden>
+          <div class="sgroup">
+            <h4>실행</h4>
+            <div class="srow"><span class="lb"><b>Windows 시작 시 실행</b><small>트레이 메뉴의 "시작 시 실행"과 같은 설정입니다.</small></span><button type="button" class="toggle" id="set-autostart" role="switch" aria-checked="false" aria-label="Windows 시작 시 실행"></button></div>
+          </div>
+          <div class="sgroup">
+            <h4 id="set-close-h">창 닫기 버튼(×)</h4>
+            <div class="radios" id="set-close-action" role="radiogroup" aria-labelledby="set-close-h">
+              <label class="radio"><input type="radio" name="set-close-action" value="tray">트레이로 숨기기<small>알림은 계속 받습니다</small></label>
+              <label class="radio"><input type="radio" name="set-close-action" value="quit">상상톡 종료<small>알림을 받지 않습니다</small></label>
+            </div>
+          </div>
+          <div class="sgroup">
+            <h4>창 불러오기 단축키</h4>
+            <p class="desc">어느 프로그램에서든 이 키를 누르면 상상톡 창이 앞으로 나옵니다.</p>
+            <div class="srow"><span class="lb"><b>단축키 사용</b></span><button type="button" class="toggle" id="set-hk-on" role="switch" aria-checked="false" aria-label="창 불러오기 단축키 사용"></button></div>
+            <div class="srow hk-row"><span class="lb"><span class="hk" id="set-hk-keys"></span><small id="set-hk-hint" hidden>바꿀 키를 함께 누르세요. Esc를 누르면 취소합니다.</small>
+              <div class="err-line" id="set-hk-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div></span>
+              <button type="button" class="btn line sm" id="set-hk-change">바꾸기</button></div>
+          </div>
+          <div class="sgroup">
+            <h4>화면 캡처 막기 <span class="policy"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>기관 정책으로 고정됨</span></h4>
+            <div class="srow locked"><span class="lb"><b id="set-capture-text">확인하는 중…</b><small>관리자가 정한 설정입니다.</small></span><button type="button" class="toggle" id="set-capture" role="switch" aria-checked="false" aria-label="화면 캡처 막기" disabled></button></div>
+          </div>
+          <div class="err-line" id="set-app-error" role="alert" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16v.5"/></svg><span></span></div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- N3 잠시 끄기 메뉴(종 우클릭·길게 누르기) -->
+  <div class="menu compact snooze-menu" id="snooze-menu" role="menu" aria-label="알림 잠시 끄기" hidden>
+    <div class="hd">알림 잠시 끄기</div>
+    <div class="now" id="snz-menu-now" hidden></div>
+    <button type="button" role="menuitem" id="snz-menu-off" hidden>다시 켜기</button>
+    <button type="button" role="menuitem" data-snooze="1h">1시간<small id="snz-menu-1h"></small></button>
+    <button type="button" role="menuitem" data-snooze="3h">3시간<small id="snz-menu-3h"></small></button>
+    <button type="button" role="menuitem" data-snooze="today">오늘 하루<small>오후 11:59까지</small></button>
+    <button type="button" role="menuitem" data-snooze="custom">직접 입력…</button>
+    <hr>
+    <div class="hd note">끈 동안에도 중요 메시지는 알립니다.</div>
+  </div>
+
+  <!-- N6 알림 센터 -->
+  <aside class="ncenter" id="center" role="dialog" aria-labelledby="center-title" hidden>
+    <header>
+      <h2 id="center-title">알림 <span class="badge" id="center-count" hidden></span></h2>
+      <button type="button" class="txt-btn" id="center-seen">모두 확인</button>
+      <button type="button" class="icon-btn" id="center-snooze" aria-label="알림 잠시 끄기" title="알림 잠시 끄기" aria-haspopup="menu" aria-controls="snooze-menu"><svg class="i" aria-hidden="true"><use href="#ico-bell-off"/></svg></button>
+      <button type="button" class="icon-btn" id="center-close" aria-label="알림 닫기"><svg class="i" aria-hidden="true"><use href="#ico-x"/></svg></button>
+    </header>
+    <div class="stabs" id="center-tabs" role="tablist" aria-label="알림 종류">
+      <button type="button" role="tab" id="ctab-all" data-tab="all" aria-controls="center-body">전체<span class="n"></span></button>
+      <button type="button" role="tab" id="ctab-mention" data-tab="mention" aria-controls="center-body">멘션<span class="n"></span></button>
+      <button type="button" role="tab" id="ctab-reply" data-tab="reply" aria-controls="center-body">답장·반응<span class="n"></span></button>
+      <button type="button" role="tab" id="ctab-notice" data-tab="notice" aria-controls="center-body">공지<span class="n"></span></button>
+    </div>
+    <div class="nbody" id="center-body" role="tabpanel" aria-labelledby="ctab-all" aria-busy="false"></div>
+  </aside>
+
   <dialog id="confirm-dialog" class="v2 confirm" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
     <form id="confirm-form">
       <header><img id="confirm-img" src="/assets/turtle-side.png" alt="" hidden><h2 id="confirm-title"></h2></header>

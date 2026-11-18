@@ -13,6 +13,9 @@
                                    PostgreSQL + 첨부파일(같은 서버 디스크)
 ```
 
+**보안 전제: 직원 PC는 ②(Zulip 주소·포트)에 직접 닿지 못하게 둔다.** ②의 443에 닿는 것은 ① 웹 서버와 관리자 PC뿐이다.
+Zulip 사진 주소(`/user_avatars/…`)는 로그인 없이 열리고, Zulip 웹으로 직접 쓰면 상상톡의 "중요 메시지" 표식을 흉내 낼 수 있기 때문이다(아래 "3단계 운영 반영" 1절, `firewall.md` "열지 않는 것").
+
 > 주의: `.local`은 mDNS(멀티캐스트 DNS, RFC 6762) 예약 도메인이라 Windows·macOS·Linux(avahi)에서 내부 DNS 대신 mDNS로 이름을 찾으려 해 접속이 늦거나 실패할 수 있다. 운영에는 기관 내부 DNS가 실제로 쓰는 도메인(예: `talk.<기관 내부 도메인>`)을 쓴다. 문서의 `.local`은 예시일 뿐이다.
 
 | 파일 | 서버 | 용도 |
@@ -23,7 +26,7 @@
 | `rocky9.md` | ①·② | Rocky 9 설치: 오프라인 RPM 저장소, Docker CE, SELinux, Node.js 24, nginx, chrony |
 | `firewall.md` | 전체 | 2대 허용 포트 표, firewalld·DOCKER-USER 예시, 3계층 표(부록) |
 | `pki/make-internal-ca.sh`, `pki/README.md` | 관리용 | 내부 CA·서버 인증서(웹·Zulip·DB) 발급, 배치 위치, 직원 PC 루트 배포, 갱신 |
-| `backup.sh` / `backup.ps1` | ②·① / 개발 PC | Zulip 공식 백업 + 쪽지 인덱스 사본(`backup.sh`는 2단계 `web/data` 파일도) |
+| `backup.sh` / `backup.ps1` | ②·① / 개발 PC | Zulip 공식 백업 + 쪽지 인덱스 사본(`backup.sh`는 2·3단계 `web/data` 파일도) |
 | `restore.md` | | 백업·복원 절차(Windows, 리눅스) |
 | `make-offline-bundle.sh` | 반입 준비 PC | 소스 + 이미지 5개 `docker save` + (`--with-rocky9`) RPM·Node.js + SHA256SUMS |
 | `compose/compose.app.yaml`, `compose/compose.db.yaml` | 3계층 | 보안성 검토에서 DB 서버 분리를 요구할 때. DB 44703·TLS(`verify-full`)를 똑같이 맞춰 둠 |
@@ -41,14 +44,17 @@
 2. 인증서: 기관 인증서(1순위) 또는 `ops/pki/make-internal-ca.sh`(2순위)로 웹·Zulip·DB 인증서를 준비한다(`pki/README.md`). DB 인증서 SAN은 `database`.
 3. ①·② 공통: `rocky9.md` 1절(최신 9.x, SELinux enforcing, 오프라인 저장소, chrony) → `firewall.md`의 firewalld.
 4. ②: `rocky9.md` 2절(Docker CE) → `/etc/sangsangtalk/zulip.env`(0600 root)에 아래 값 → 인증서 배치(`pki/README.md`) →
-   `docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.was-db.yaml up -d` → `firewall.md`의 DOCKER-USER.
+   `docker compose --env-file /etc/sangsangtalk/zulip.env -f ops/compose/compose.was-db.yaml up -d` → `firewall.md`의 DOCKER-USER
+   (443은 ① 웹 서버와 관리자 PC만 허용하고 **직원 PC 대역은 허용하지 않는다** — "3단계 운영 반영" 1절).
    이미지 자체 자동 백업은 꺼져 있고(`AUTO_BACKUP_ENABLED: "False"`) `ops/backup.sh`를 cron으로 돌린다(`restore.md`).
-   처음 기동 후 조직 만들기·관리자 계정·조직 설정은 아래 "M12" 절, 이어서 "2단계 운영 반영" 절(읽음 확인·수정 제한 조직 설정, CMS 관리 계정의 `can_create_users`).
+   처음 기동 후 조직 만들기·관리자 계정·조직 설정은 아래 "M12" 절, 이어서 "2단계 운영 반영" 절(읽음 확인·수정 제한 조직 설정, CMS 관리 계정의 `can_create_users`),
+   "3단계 운영 반영" 4절(프로필 사진 변경을 막을지 정하기).
    한국어 검색(PGroonga)이 켜져 있어 **처음 기동할 때 검색 색인 마이그레이션이 돈다**(기존 데이터가 있으면 오래 걸린다. "2단계 운영 반영" 1절).
 5. ①: `rocky9.md` 3절(Node.js 24 → `/opt/node`, nginx) → `systemd/sangsangtalk-web.service`(설치 명령은 파일 머리 주석),
    `/etc/sangsangtalk/web.env`(`ZULIP_ORIGIN=https://zulip.eumseong.local`, `ZULIP_CA_FILE=/etc/sangsangtalk/ca/eumseong-root-ca.pem`, `PUBLIC_ORIGIN=https://talk.eumseong.local`,
    2단계 `AUDIT_KEEP_MONTHS`·`WATERMARK`·`AUTO_LOCK_MINUTES`·`LOGIN_DOMAIN`은 비우면 기본값 — "2단계 운영 반영" 4절) → nginx(감사 로그 IP용 `X-Forwarded-For` 포함).
 6. 직원 PC: (내부 CA면) 루트 인증서를 Windows 인증서 저장소에 배포(`pki/README.md`)하고, `SANGSANGTALK_APP_URL=https://talk.eumseong.local/`로 빌드한 설치파일을 배포(`BUILD.md`).
+   직원 PC에서 ②에 닿지 않는지 확인한다: PowerShell `Test-NetConnection zulip.eumseong.local -Port 443`의 `TcpTestSucceeded`가 `False`여야 한다.
 
 ② `/etc/sangsangtalk/zulip.env` 값(`compose.was-db.yaml`):
 
@@ -326,6 +332,61 @@ PY
 ### 6. 백업
 
 `backup.sh`가 [웹] 서버의 `web/data` 2단계 파일(`notices.json`, `prefs.json`, `admin-meta.json`, `audit/`)을 회차 폴더의 `web-data/`에 함께 복사한다(`sessions.json`은 뺀다). 표와 복원은 `restore.md`.
+
+## 3단계 운영 반영 (`docs/p3-contract.md`)
+
+### 1. 보안 전제: 직원 PC는 Zulip에 직접 닿지 않는다
+
+직원 PC에서 ②의 Zulip(`ZULIP_EXTERNAL_HOST`, 443/`ZULIP_HTTPS_PORT`)으로 가는 연결은 막는다. ②의 443에 닿는 것은 ① 웹 서버(`ZULIP_ORIGIN` 호출, `firewall.md` 2번)와
+관리자 PC(Zulip 관리 화면, 3번)뿐이다. 2단계의 "앱에서만 로그인"과 같은 통제이고, 3단계에서 이유가 두 가지 늘었다.
+
+1. **Zulip 사진 주소는 로그인 없이 열린다.** Zulip은 프로필 사진을 `/user_avatars/<조직 번호>/<해시>.png` 같은 주소로 주는데, 이 주소는 로그인하지 않아도 열린다.
+   상상톡은 사진을 Zulip 주소 그대로 넘기지 않고, 로그인한 사람에게만 웹 서버의 `/api/avatar/<사용자ID>`로 대신 받아 준다. 그래서 직원 PC가 Zulip에 닿을 필요가 없다.
+2. **Zulip 웹으로 직접 쓰면 "중요 메시지" 표식을 흉내 낼 수 있다.** 중요 메시지는 Zulip 본문 첫 줄의 `:rotating_light: **[중요]**` 표식으로 저장된다.
+   상상톡 서버는 직원이 직접 입력한 같은 표식을 무력화하지만, Zulip 웹·공식 앱으로 보내면 이 검사를 거치지 않는다.
+   그러면 상상톡 화면에 중요 메시지로 보이고, 전체 대화방 관리자 제한·시간당 10회 제한을 피하며, 감사 로그(`urgent_send`)에도 남지 않는다.
+
+- 관리자 계정도 Zulip 화면에서 같은 일을 할 수 있다. 관리자 PC 허용은 꼭 필요한 주소만 둔다(`firewall.md` 3번).
+- 확인: 직원 PC에서 `Test-NetConnection <ZULIP_EXTERNAL_HOST> -Port 443`이 실패(`TcpTestSucceeded : False`)하고, 상상톡 앱의 사진·대화는 정상이어야 한다.
+
+### 2. 백업·복원
+
+`backup.sh`가 3단계 파일 `activity.json`(알림 센터의 답장·반응 기록과 확인 시각)과 `policy.json`(관리자 정책)도 회차 폴더의 `web-data/`에 복사한다.
+저장 도중에만 생기는 직전 사본(`<파일>.bak`)이 있으면 함께 복사한다. `sessions.json`은 지금처럼 빼고, 새 환경변수·옵션은 없다(cron 줄 그대로). 표와 복원 명령은 `restore.md`.
+
+**`policy.json`이 깨졌을 때:** 본 파일과 `.bak`을 둘 다 읽지 못하면 웹 서버는 돌지만 **파일 올리기가 모두 503**("파일 정책을 읽지 못해 파일 올리기를 막았습니다…")으로 막히고,
+관리자 화면 "정책" 탭도 503이다(journal에 `관리자 정책 파일을 읽지 못했습니다`). 백업 사본으로 되돌리거나, 두 파일을 다른 이름으로 옮기면 기본값
+(미리 보기 강제 꺼짐, 추가 차단 확장자 없음. 서버에 박힌 차단 목록과 `MAX_UPLOAD_MB`는 그대로)으로 읽는다. 재시작은 필요 없다.
+절차는 `restore.md` "관리자 정책 파일(`policy.json`)이 깨졌을 때".
+
+### 3. 중요 메시지 시간당 10회 제한
+
+한 사람이 1시간에 중요 메시지를 10번까지 보낼 수 있다(넘으면 429 "중요 메시지는 1시간에 10번까지 보낼 수 있습니다.").
+이 횟수는 **웹 서버 메모리에만** 있다. `systemctl restart sangsangtalk-web`, 서버 재부팅, 비정상 종료 뒤 자동 재시작을 하면 모두 0으로 돌아가고,
+그 시간 안에 다시 10번 보낼 수 있다. 파일에는 남지 않으므로 백업·복원과도 관계없다.
+보낸 기록은 감사 로그 `urgent_send`(메시지 ID)에 남으므로, 많이 보냈는지는 관리자 화면 감사 로그의 "동작" 거르기로 본다.
+
+### 4. 프로필 사진
+
+- 사진은 **직원 본인만** 바꾼다: 상상톡 설정 → 내 정보(PNG·JPG, 5MB 이하. 기본 사진으로 되돌리기도 된다). 상상톡 서버가 본인의 Zulip API 키로 Zulip `/users/me/avatar`에 넘기고, 감사 로그 `avatar_change`를 남긴다.
+  사진 파일은 Zulip 업로드에 저장되므로 `manage.py backup`(Zulip 백업)에 들어간다.
+- 직원이 사진을 바꾸지 못하게 하려면 조직 설정 `avatar_changes_disabled`를 켠다. 켜면 상상톡에 "기관 설정으로 사진을 바꿀 수 없습니다."(403)가 뜬다.
+  - 관리자 PC의 Zulip 관리 화면(조직 설정 → 조직 권한의 사진 변경 금지 항목)에서 바꾼다. 한국어 메뉴 이름은 확인 필요.
+  - API로는 `PATCH /api/v1/realm`의 `avatar_changes_disabled` 필드다(위 M12 조직 설정과 같은 방식). 12.3 `zerver/models/realms.py`에서 조직 설정 항목임을 확인했다.
+  - Zulip 12.3 코드(`zerver/views/user_settings.py`)는 이 설정이 켜져 있어도 **조직 관리자·소유자는 자기 사진을 바꿀 수 있게** 한다. 일반 직원만 막힌다.
+  - 서버 전체 설정 `AVATAR_CHANGES_DISABLED`도 있으나(같은 파일) 운영 compose에는 넣지 않았다.
+- **관리자가 다른 직원의 사진을 바꾸는 방법: 확인 필요.** 상상톡에는 그 기능이 없고(Zulip API에도 남의 사진을 바꾸는 API가 없다),
+  12.3 `manage.py` 관리 명령에서도 사진을 바꾸는 명령을 찾지 못했다. Zulip이 공식으로 안내하는 서버 관리자 절차를 확인하기 전까지는 명령을 적지 않는다.
+  그동안은 직원 본인이 바꾸게 한다. 사진 변경을 막아 둔 경우에는 관리자가 잠시 풀고, 직원이 바꾼 뒤 다시 막는다.
+- nginx: 일반 요청 한도(`client_max_body_size 1m`)로는 1MB가 넘는 사진이 nginx에서 413으로 막히므로 `nginx/sangsangtalk.conf`에 `/api/me/avatar`만 6MB로 둔다(사진 5MB + 여유).
+  이미 설치한 ① 서버는 이 파일을 다시 복사하고 `nginx -t && systemctl reload nginx`.
+
+### 5. 환경변수·버전·PC 앱 설정
+
+- 3단계에는 **새 환경변수가 없다**(`/etc/sangsangtalk/web.env`·`zulip.env` 그대로). 업로드 최대 크기는 계속 `MAX_UPLOAD_MB`이고, 관리자 정책 화면에서는 읽기만 한다.
+  자동 잠금의 기관 값도 계속 `AUTO_LOCK_MINUTES`다(직원은 이보다 짧게만 정할 수 있다).
+- 웹 버전은 `web/package.json`의 `version`(지금 0.1.0)이고, 설정 화면 아래에 PC 앱 버전과 함께 보인다. 새 판을 배포할 때 설치파일과 웹 소스의 버전을 함께 올린다(`BUILD.md`).
+- PC 앱의 기기별 설정(창 닫기 동작, 단축키)은 직원 PC의 `%LOCALAPPDATA%\com.sangsangtalk.desktop\settings.json`에 있다. 서버 백업 대상이 아니고, 지우면 기본값(트레이로 숨기기, 단축키 꺼짐)이 된다.
 
 ## 앱 계층 메모
 

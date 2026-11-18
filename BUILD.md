@@ -39,6 +39,36 @@ npm run build -- --bundles nsis --no-sign
 
 `web/package.json` has no dependencies and no lockfile.
 
+### Desktop dependencies (stage 3)
+
+Stage 3 (`docs/p3-contract.md`, P5) adds these exact-version crates to `desktop/src-tauri/Cargo.toml`:
+
+- `tauri-plugin-global-shortcut = "=2.4.1"`: the optional global shortcut that brings the window to the front (default off, `Ctrl+Shift+Space`). Only Rust registers shortcuts; the web page gets no global-shortcut permission.
+- `serde` (`=1.0.229`, `derive`) and `serde_json` (`=1.0.154`): read and write the per-device settings file below.
+
+`Cargo.lock` stays at lockfile version 4. Commit `Cargo.toml` and `Cargo.lock` together; `npm run build` needs no extra setup on the development PC or on CI.
+
+### Per-device app settings
+
+The close-window action (`tray`, the default, or `quit`) and the global shortcut (on/off and the key) are stored per PC, not on the server, in:
+
+```
+%LOCALAPPDATA%\com.sangsangtalk.desktop\settings.json
+```
+
+The folder name is the `identifier` in `tauri.conf.json`. The installer does not create the file; the app writes it the first time a staff member changes one of these settings. A missing or broken file reads as the defaults (close to tray, shortcut off), and a key that cannot be parsed resets the shortcut to the default. Server backups do not include it. Autostart is not in this file; it stays with the autostart plugin (the tray menu item).
+
+### Versions
+
+The version appears in four files. Raise them together for every release:
+
+- `desktop/package.json` (`version`)
+- `desktop/src-tauri/tauri.conf.json` (`version`, used in the installer name `SangsangTalk_<version>_x64-setup.exe`)
+- `desktop/src-tauri/Cargo.toml` (`[package] version`; `Cargo.lock` follows on the next build)
+- `web/package.json` (`version`, added in stage 3, currently `0.1.0`). The web server reports it as `version` in `/api/session`, and the settings screen shows it next to the desktop version (`app_info`).
+
+All four are `0.1.0` now. The web server and the installer are deployed separately, so keep the same number to make the settings screen meaningful.
+
 ## GitHub Actions
 
 `.github/workflows/windows.yml` runs on `windows-latest` for `push`, `pull_request`, and `workflow_dispatch`. It installs Node.js 24.20.0 and Rust stable, runs `npm ci`, runs the checks above, builds the NSIS installer, and uploads:
@@ -86,7 +116,7 @@ The `web-bridge` capability (the remote URL allowed to call the shell) is genera
 
 Certificates: the WebView2 window and the https status check use the Windows certificate store. Deploy the organization's root CA to staff PCs (for example by Group Policy). The app does not bundle a certificate.
 
-The web server is different: Node uses its own CA list, not the OS store. Give it the internal CA with `ZULIP_CA_FILE` (preferred) or `NODE_EXTRA_CA_CERTS`, in `/etc/sangsangtalk/web.env`. Web server variables: `HOST`, `PORT`, `PUBLIC_ORIGIN`, `SESSION_KEY` (32-byte base64), `ZULIP_ORIGIN`, `ZULIP_CA_FILE`, `ZULIP_TLS_INSECURE` (development only), `MAX_UPLOAD_MB`, and from stage 2 `AUDIT_KEEP_MONTHS` (default 12), `WATERMARK` (on unless `0`), `AUTO_LOCK_MINUTES` (default 30, `0` = off). See `.env.example`, `ops/systemd/sangsangtalk-web.service` and `ops/README.md` ("2단계 운영 반영").
+The web server is different: Node uses its own CA list, not the OS store. Give it the internal CA with `ZULIP_CA_FILE` (preferred) or `NODE_EXTRA_CA_CERTS`, in `/etc/sangsangtalk/web.env`. Web server variables: `HOST`, `PORT`, `PUBLIC_ORIGIN`, `SESSION_KEY` (32-byte base64), `ZULIP_ORIGIN`, `ZULIP_CA_FILE`, `ZULIP_TLS_INSECURE` (development only), `MAX_UPLOAD_MB`, and from stage 2 `AUDIT_KEEP_MONTHS` (default 12), `WATERMARK` (on unless `0`), `AUTO_LOCK_MINUTES` (default 30, `0` = off). Stage 3 adds no variables: the admin policy lives in `web/data/policy.json` and is edited on the admin screen. See `.env.example`, `ops/systemd/sangsangtalk-web.service` and `ops/README.md` ("2단계 운영 반영").
 
 ### Screen-capture blocking (optional, off by default)
 
@@ -152,10 +182,10 @@ The Windows desktop installer is built separately (above) and carried with the b
 
 `ops/backup.ps1` (Windows PowerShell 5.1) runs Zulip's own `manage.py backup` inside the running `zulip` container, copies the tarball to `C:\SangsangTalk-backup\<yyyyMMdd-HHmmss>\`, removes the temporary file in the container, deletes backup folders older than 30 days (`-RetentionDays`, `-BackupRoot`), and appends to `backup.log` in the backup root. It exits non-zero on failure. The tarball contains `/etc/zulip`, including `zulip-secrets.conf`, so keep the backup folder private. Restore steps and the Task Scheduler command are in `ops/restore.md`; nothing is scheduled automatically.
 
-`ops/backup.sh` is the Linux (bash) version for the closed-network servers, with the same steps, logs and exit codes (`--compose-file`, `--env-file`, `--backup-root`, `--retention-days`, `--notes-only` for the web server, `--dry-run`). It also copies the stage-2 web data (`web/data/notices.json`, `prefs.json`, `admin-meta.json`, `audit/`) into `web-data/` in the same backup folder (`--web-data-dir`); `sessions.json` is left out. `backup.ps1` copies only `notes.json`. Linux restore steps and cron examples are in `ops/restore.md`.
+`ops/backup.sh` is the Linux (bash) version for the closed-network servers, with the same steps, logs and exit codes (`--compose-file`, `--env-file`, `--backup-root`, `--retention-days`, `--notes-only` for the web server, `--dry-run`). It also copies the stage-2 and stage-3 web data (`web/data/notices.json`, `prefs.json`, `admin-meta.json`, `audit/`, `activity.json`, `policy.json`, and any `<file>.bak` left by an interrupted save) into `web-data/` in the same backup folder (`--web-data-dir`); `sessions.json` is left out. `backup.ps1` copies only `notes.json`. Linux restore steps and cron examples are in `ops/restore.md`.
 
 ## Notes
 
-The shell loads `SANGSANGTALK_APP_URL` as set at build time (default `http://127.0.0.1:43123/`). It does not bundle the web server. `lib.rs` writes a diagnostic word to `C:\SangsangTalk\desktop\link-state.txt` and ignores write errors. That path is specific to the development PC and is not a credential. CI does not run the GUI.
+The shell loads `SANGSANGTALK_APP_URL` as set at build time (default `http://127.0.0.1:43123/`). It does not bundle the web server. Debug builds only (`npm run dev`) write a diagnostic word to `%LOCALAPPDATA%\com.sangsangtalk.desktop\link-state.txt` and ignore write errors; release builds do not. The file is not a credential. CI does not run the GUI.
 
-Autostart stays off unless the tray item is checked. Notifications and an unread badge are not implemented.
+Autostart stays off unless the tray item (or the PC app tab in settings) turns it on. From stage 3 the shell shows Windows notifications with a chosen sound, a taskbar overlay badge for unread messages, taskbar flashing, and urgent notifications that stay until dismissed (`docs/p3-contract.md` N2, N5, N7). When the window is hidden in the tray there is no taskbar button, so the tray icon's unread mark is the only cue.

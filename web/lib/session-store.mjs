@@ -7,7 +7,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const AAD = Buffer.from("sangsangtalk-sessions-v1");
-const FIELDS = ["sid", "email", "userId", "fullName", "apiKey", "expiresAt", "peer"];
+// P3 P4 ("내 로그인 목록"): createdAt / lastSeenAt (ms), client ("desktop" | "browser"), ip. Older files lack them.
+const FIELDS = ["sid", "email", "userId", "fullName", "apiKey", "expiresAt", "peer", "createdAt", "lastSeenAt", "client", "ip"];
 
 export function encryptSessions(key, records) {
   const iv = randomBytes(12);

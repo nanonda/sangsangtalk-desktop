@@ -6,6 +6,7 @@
 //   ```quote
 //   앞 80자
 //   ```
+//   :rotating_light: **[중요]**                  <- N7 urgent marker line (P3), only right after the reply prefix
 //   @**이서준|3** 확인 부탁드립니다               <- body with mentions
 //   [회의자료.pdf](/user_uploads/2/ab/cd/x.pdf)   <- attachment lines (lib/files.mjs)
 // Zulip's own web "Quote and reply" writes the same shape (with "said"/"말했습니다" and a full URL), so
@@ -14,6 +15,9 @@ import { splitAttachments } from "./files.mjs";
 
 export const RECALLED_TEXT = "회수된 메시지입니다";
 export const EXCERPT_LENGTH = 80;
+// N7 (docs/p3-contract.md): an urgent message starts (after any reply prefix) with this exact line.
+// Other Zulip clients show it as "🚨 [중요]". A user cannot type it: neutralizeSyntax breaks it.
+export const URGENT_LINE = ":rotating_light: **[중요]**";
 
 // Reply prefix at the very start: silent mention, link ending in /near/<id>, then a quote fence of 3+ ` or ~.
 const REPLY_PREFIX = /^@_\*\*([^\n]+?)\|(\d+)\*\* \[[^\]\n]*\]\([^)\s]*\/near\/(\d+)\):\n(`{3,}|~{3,})quote\n([\s\S]*?)\n\4[ \t]*(?:\n|$)/;
@@ -28,8 +32,15 @@ export function splitRaw(raw) {
   const match = text.match(REPLY_PREFIX);
   if (match) {
     prefix = match[0].endsWith("\n") ? match[0] : `${match[0]}\n`;
-    reply = { id: Number(match[3]), senderName: match[1].trim(), excerpt: excerptOf(match[5]), recalled: false };
+    reply = { id: Number(match[3]), senderId: Number(match[2]), senderName: match[1].trim(), excerpt: excerptOf(match[5]), recalled: false };
     text = text.slice(match[0].length);
+  }
+  // The urgent line is kept in the prefix, so an edit (prefix + new body + files) keeps it.
+  let urgent = false;
+  if (text === URGENT_LINE || text.startsWith(`${URGENT_LINE}\n`)) {
+    urgent = true;
+    prefix += `${URGENT_LINE}\n`;
+    text = text.slice(URGENT_LINE.length + 1);
   }
   const bodyLines = [];
   const fileLines = [];
@@ -38,7 +49,7 @@ export function splitRaw(raw) {
     if (one.attachments.length === 1 && !one.content) fileLines.push(line.trim());
     else bodyLines.push(line);
   }
-  return { prefix, reply, body: bodyLines.join("\n").trim(), fileLines };
+  return { prefix, reply, urgent, body: bodyLines.join("\n").trim(), fileLines };
 }
 
 // "@**김도윤|5** 안녕" -> "@김도윤 안녕"
@@ -58,7 +69,7 @@ export function mentionIds(body) {
 
 // One line, at most EXCERPT_LENGTH characters, mentions shown as "@이름", file links as "[파일] 이름".
 export function excerptOf(text) {
-  const { body, fileLines } = splitRaw(String(text || "").replace(REPLY_PREFIX, ""));
+  const { body, fileLines } = splitRaw(String(text || ""));
   const plain = displayText(body).replace(/\s+/g, " ").trim();
   if (plain === RECALLED_TEXT) return RECALLED_TEXT;
   if (plain) return plain.length > EXCERPT_LENGTH ? `${plain.slice(0, EXCERPT_LENGTH)}…` : plain;
@@ -122,6 +133,7 @@ export function messageFields(raw, { edited, flags = [], myId }) {
     edited: Boolean(edited),
     recalled,
     replyTo: recalled ? null : parts.reply,
+    urgent: !recalled && parts.urgent,
     mentions,
     mentionedMe: !recalled && (flags.includes("mentioned") || wildcard || mentions.includes(myId)),
     starred: flags.includes("starred"),
@@ -208,6 +220,12 @@ export function widgetContent({ poll, todo }) {
 // Zulip mention / quote syntax typed by the user ("@**이름**", "@_**이름|5**", "@*그룹*", "@**all**")
 // is broken with a zero-width space, so only mentions checked by the server (applyMentions) notify
 // anyone and only replyToId makes a reply quote.
+// The urgent marker typed at the start of a line gets a zero-width space in front, so it never reads as urgent.
 export function neutralizeSyntax(text) {
-  return String(text || "").replace(/@(_?)\*/g, "@\u200B$1*");
+  return String(text || "").replace(/@(_?)\*/g, "@\u200B$1*").replace(/^([ \t]*):rotating_light:/gm, "$1\u200B:rotating_light:");
+}
+
+// Text for an urgent message: marker line first (the caller puts any reply prefix in front of it).
+export function urgentBody(text) {
+  return `${URGENT_LINE}\n${text}`;
 }

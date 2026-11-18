@@ -5,7 +5,7 @@
 - 만드는 스크립트: `ops/backup.ps1` (Windows PowerShell 5.1)
 - 위치: `C:\SangsangTalk-backup\<yyyyMMdd-HHmmss>\zulip-backup-<yyyyMMdd-HHmmss>.tar.gz`
 - 쪽지 인덱스 사본: 같은 폴더의 `notes.json`(`C:\SangsangTalk\web\data\notes.json` 복사본, 원본이 없으면 경고 로그만 남기고 생략)
-- 2단계 상상톡 데이터(`web\data`의 `notices.json`·`prefs.json`·`admin-meta.json`·`audit\`)는 `backup.ps1`(개발 PC용)이 복사하지 **않는다**. 개발 PC에서 필요하면 `web\data` 폴더를 직접 복사해 둔다. 운영(리눅스) `backup.sh`는 복사한다(아래 리눅스 절).
+- 2·3단계 상상톡 데이터(`web\data`의 `notices.json`·`prefs.json`·`admin-meta.json`·`audit\`·`activity.json`·`policy.json`)는 `backup.ps1`(개발 PC용)이 복사하지 **않는다**. 개발 PC에서 필요하면 `web\data` 폴더를 직접 복사해 둔다. 운영(리눅스) `backup.sh`는 복사한다(아래 리눅스 절).
 - 로그: `C:\SangsangTalk-backup\backup.log`
 - 보관: 30일 지난 날짜 폴더는 백업이 성공할 때 자동 삭제(`-RetentionDays`로 변경). 이름이 `yyyyMMdd-HHmmss` 형식인 폴더만 지운다.
 - 내용(Zulip 공식 `manage.py backup` 형식):
@@ -135,7 +135,7 @@ install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
 ## 백업: `ops/backup.sh`
 
 `ops/backup.ps1`과 같은 동작(`manage.py backup` → `docker compose cp` → tar 목록 검사 → 쪽지 인덱스 사본 → 보관 일수 지난 폴더 삭제 → 로그, 실패 시 종료 코드 1)을 bash로 한다.
-여기에 더해 2단계 상상톡 데이터를 같은 회차 폴더의 `web-data/`에 복사한다(`backup.ps1`에는 없음).
+여기에 더해 2·3단계 상상톡 데이터를 같은 회차 폴더의 `web-data/`에 복사한다(`backup.ps1`에는 없음).
 
 | `web/data` 파일 | 내용 | 백업 |
 |---|---|---|
@@ -144,9 +144,12 @@ install -d -o sangsangtalk -g sangsangtalk -m 0700 /var/backups/sangsangtalk-web
 | `prefs.json` | 사용자 설정(즐겨찾기, 알림 끄기, 방해 금지) | `<회차>/web-data/prefs.json` |
 | `admin-meta.json` | CMS 관리 정보(퇴직 처리 시각, 다음 로그인 때 비밀번호 바꾸기) | `<회차>/web-data/admin-meta.json` |
 | `audit/YYYY-MM.jsonl` | 감사 로그(보존 `AUDIT_KEEP_MONTHS`개월) | `<회차>/web-data/audit/` |
+| `activity.json` | 3단계 알림 센터의 답장·반응 기록과 확인 시각(메시지 ID·사용자 ID만, 본문 없음. 최근 30일) | `<회차>/web-data/activity.json` |
+| `policy.json` | 3단계 관리자 정책(알림 미리 보기 숨김 강제, 추가 차단 확장자) | `<회차>/web-data/policy.json` |
+| `<위 JSON>.bak` | 저장 도중(또는 저장이 끊긴 뒤)에만 있는 직전 사본. 서버는 본 파일이 없거나 깨지면 이것을 읽는다 | 있을 때만 `<회차>/web-data/<이름>.bak` |
 | `sessions.json` | 암호화된 로그인 세션(Zulip API 키 포함) | **하지 않음.** 복원 뒤에는 직원이 다시 로그인한다 |
 
-- 아직 만들어지지 않은 파일(`prefs.json`은 처음 설정을 바꿀 때 생기는 등)은 `[INFO] … 건너뜀`만 남긴다. 있는데 복사하지 못하면 `[WARN]`(전체 백업) 또는 `[ERROR] 백업 실패`(`--notes-only`)다.
+- 아직 만들어지지 않은 파일(`prefs.json`은 처음 설정을 바꿀 때, `activity.json`은 첫 답장·반응 때, `policy.json`은 관리자가 정책을 처음 저장할 때 생기는 등)은 `[INFO] … 건너뜀`만 남긴다. 있는데 복사하지 못하면 `[WARN]`(전체 백업) 또는 `[ERROR] 백업 실패`(`--notes-only`)다.
 - 폴더 위치는 기본으로 `--notes-file`이 있는 폴더이고, `--web-data-dir`로 바꿀 수 있다.
 - 감사 로그 보존 기간(`AUDIT_KEEP_MONTHS`)이 지나 서버가 지운 달의 파일도 백업 회차에는 남는다. 백업 보관 일수(`--retention-days`)를 기관 보존 기준과 함께 정한다.
 
@@ -242,10 +245,13 @@ systemctl stop sangsangtalk-web
 src=/var/backups/sangsangtalk-web/<가장 가까운 회차>
 dst=/opt/sangsangtalk/web/data
 install -o sangsangtalk -g sangsangtalk -m 0600 "$src/notes.json" "$dst/notes.json"
-# 2단계 데이터: 그 회차에 있는 것만 되돌린다(없는 파일은 그 회차 때 아직 없던 것)
-for f in notices.json prefs.json admin-meta.json; do
-  if [ -f "$src/web-data/$f" ]; then
-    install -o sangsangtalk -g sangsangtalk -m 0600 "$src/web-data/$f" "$dst/$f"
+# 2·3단계 데이터: 그 회차에 있는 것만 되돌린다(없는 파일은 그 회차 때 아직 없던 것).
+# 지금 폴더의 .bak 은 지우고, 그 회차에 .bak 이 있었으면 그것을 함께 되돌린다(서버가 옛 .bak 을 읽지 않게).
+for f in notices.json prefs.json admin-meta.json activity.json policy.json; do
+  if [ -f "$src/web-data/$f" ] || [ -f "$src/web-data/$f.bak" ]; then
+    rm -f "$dst/$f.bak"
+    [ -f "$src/web-data/$f" ] && install -o sangsangtalk -g sangsangtalk -m 0600 "$src/web-data/$f" "$dst/$f"
+    [ -f "$src/web-data/$f.bak" ] && install -o sangsangtalk -g sangsangtalk -m 0600 "$src/web-data/$f.bak" "$dst/$f.bak"
   fi
 done
 # 감사 로그는 덮어쓰지 않고 합친다: 백업에만 있는 달 파일만 되살리고 지금 있는 파일은 그대로 둔다
@@ -260,8 +266,53 @@ systemctl start sangsangtalk-web
 ```
 
 - `notices.json`도 메시지 ID를 가리키므로 쪽지 인덱스처럼 Zulip 백업과 가장 가까운 회차를 쓴다.
+- `activity.json`도 메시지 ID를 가리키므로 같은 회차를 쓴다. 되돌리면 백업 이후의 답장·반응 알림이 빠지고, 확인 기록도 백업 시점으로 돌아가 그 뒤에 확인한 항목(멘션·키워드·공지 포함)이 다시 안 본 것으로 보인다. 멘션·키워드·공지 항목 자체는 Zulip과 `notices.json`에서 다시 읽는다.
+- `policy.json`을 되돌리면 관리자 정책(미리 보기 숨김 강제, 추가 차단 확장자)이 백업 시점 값이 된다. 복원 뒤 관리자 화면(`/admin`) "정책" 탭에서 확인한다.
 - `admin-meta.json`을 되돌리면 백업 이후에 켠 "다음 로그인 때 비밀번호 바꾸기"와 퇴직 처리 시각이 백업 시점으로 돌아간다. 복원 뒤 CMS에서 다시 확인한다.
 - 서버는 시작할 때 `AUDIT_KEEP_MONTHS`보다 오래된 감사 로그 파일을 지우므로, 되살린 옛 달 파일도 보존 기간 밖이면 바로 지워진다. 그런 기록은 백업 폴더에서 직접 본다.
 
 확인: 관리 PC에서 `https://<ZULIP_EXTERNAL_HOST>` 로그인, 직원 PC 상상톡 앱에서 대화 목록·최근 메시지·첨부 열기.
 주의사항(설정 폴더는 복원하지 않음, 버전 일치, `--clean` 경고 등)은 위 Windows 절과 같다. 리눅스 복원 절차는 **아직 실제로 해 보지 않았다(미검증)** — 시험 환경에서 먼저 확인한다.
+
+## 관리자 정책 파일(`policy.json`)이 깨졌을 때 ([웹] 서버)
+
+웹 서버는 `web/data/policy.json`을 시작할 때와 정책을 바꿀 때 읽는다. 본 파일이 없거나 깨지면 `policy.json.bak`을 읽는다.
+**둘 다 읽지 못하면**(내용이 깨짐, 형식이 맞지 않음, 권한 문제로 읽을 수 없음) 서버는 그대로 돌지만 다음처럼 막힌다(`web/server.mjs`):
+
+- 파일 올리기: 503 "파일 정책을 읽지 못해 파일 올리기를 막았습니다. 서버 관리자에게 알려 주세요." 어떤 확장자를 막아야 하는지 모르므로 모두 막는다.
+- 관리자 화면 "정책" 탭(`GET/PATCH /api/admin/policy`): 503 "관리자 정책 파일(policy.json)을 읽지 못했습니다. …" 깨진 동안에는 서버가 이 파일을 쓰지 않는다.
+- journal에 `[sangsang] 관리자 정책 파일을 읽지 못했습니다 (<원인>). 파일 올리기를 막습니다.`가 한 번 남는다.
+- 알림 미리 보기 강제(`forcePreviewHidden`)는 마지막으로 읽은 값을 쓰고, 서버를 시작한 뒤 한 번도 읽지 못했으면 기본값(꺼짐)을 쓴다.
+
+서버는 깨진 동안 파일 올리기 요청과 정책 화면 요청이 올 때마다 파일을 다시 읽는다. 그래서 아래 두 방법 중 하나로 파일을 고치면 **재시작하지 않아도** 풀린다.
+서비스를 멈추지 않아도 된다. 명령은 root 셸에서 실행한다.
+
+```bash
+cd /opt/sangsangtalk/web/data
+ls -l policy.json policy.json.bak
+journalctl -u sangsangtalk-web | grep '관리자 정책 파일' | tail -3      # 원인 확인
+```
+
+1. **백업에서 되돌리기(권장):** 가장 최근 회차의 사본을 쓴다(정책은 메시지 ID와 관계없으므로 아무 회차나 된다).
+
+   ```bash
+   src=/var/backups/sangsangtalk-web/<회차>
+   rm -f policy.json.bak
+   install -o sangsangtalk -g sangsangtalk -m 0600 "$src/web-data/policy.json" policy.json
+   ```
+
+2. **기본값으로 되돌리기:** `policy.json`과 `policy.json.bak`이 **둘 다 없으면** 서버는 기본값으로 읽는다(`web/lib/json-store.mjs`의 빈 저장소 → `web/lib/settings.mjs`의 `emptyPolicy()`).
+   기본값은 미리 보기 강제 꺼짐, 관리자가 추가한 차단 확장자 없음이다. 서버에 박힌 차단 목록(`BLOCKED_EXTENSIONS`)과 `MAX_UPLOAD_MB`는 파일과 관계없이 그대로 적용된다.
+   깨진 파일은 지우지 말고 다른 이름으로 옮겨 둔다(`.bak`으로 끝나는 이름은 쓰지 않는다).
+
+   ```bash
+   d=$(date +%Y%m%d-%H%M%S)
+   mv policy.json "policy.json.broken-$d" 2>/dev/null
+   mv policy.json.bak "policy.json.bak.broken-$d" 2>/dev/null
+   ```
+
+   기본값이 되면 관리자가 정했던 정책이 사라진다. 관리자 화면 "정책" 탭에서 미리 보기 강제와 추가 차단 확장자를 다시 넣는다(저장하면 파일이 새로 생긴다).
+
+확인: 관리자 화면 "정책" 탭이 열리는지, 직원 PC에서 작은 파일 하나를 올려 본다.
+`activity.json`과 `.bak`이 둘 다 깨지면 알림 센터(`/api/activity`)가 503을 돌려주고 답장·반응 기록이 남지 않는다(답장·반응 자체는 된다. journal에 `활동 기록을 남기지 못했습니다`).
+같은 방식으로 백업에서 되돌리거나(Zulip 백업과 가장 가까운 회차), 두 파일을 옮기면 빈 기록에서 다시 시작한다(지난 답장·반응 알림이 사라지고, 확인 기록도 없어져 최근 30일의 멘션·키워드·공지 항목이 모두 안 본 것으로 다시 보인다).

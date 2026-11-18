@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { emptyPolicy, fullPrefs, validatePolicy, validStoredPrefs } from "./settings.mjs";
 
 // Small JSON file store for server-side records (notices, prefs). Same write method as
 // note-store.mjs: temp file -> rename, with a .bak kept during the swap. Calls are serialised.
@@ -114,26 +115,34 @@ function validateNotices(data) {
     for (const field of ["messageId", "setBy", "setAt"]) {
       if (!Number.isSafeInteger(notice?.[field]) || notice[field] <= 0) throw new Error(`invalid notice ${field}`);
     }
+    if (notice.ackRequired !== undefined) {
+      const ids = notice.ackUserIds;
+      if (notice.ackRequired !== true || !Array.isArray(ids) || !ids.every((id) => Number.isSafeInteger(id) && id > 0)) throw new Error("invalid notice ack");
+      if (!notice.acks || typeof notice.acks !== "object" || Array.isArray(notice.acks)) throw new Error("invalid notice acks");
+      for (const [userId, at] of Object.entries(notice.acks)) {
+        if (!/^\d{1,15}$/.test(userId) || !Number.isSafeInteger(at) || at <= 0) throw new Error("invalid notice ack entry");
+      }
+    }
   }
   return data;
 }
 
-// ---- B4·B5 per-user prefs: web/data/prefs.json ----
-// { version: 1, users: { "<userId>": { favorites: [key], muted: [key], dnd: { enabled, from, to, weekends } } } }
+// N8: notice record fields kept as they are (ack snapshot included).
+function noticeRecord(notice) {
+  const out = { messageId: notice.messageId, setBy: notice.setBy, setAt: notice.setAt };
+  if (notice.ackRequired) {
+    out.ackRequired = true;
+    out.ackUserIds = [...notice.ackUserIds];
+    out.acks = { ...(notice.acks || {}) };
+  }
+  return out;
+}
+
+// ---- B4·B5, P3 per-user prefs: web/data/prefs.json ----
+// { version: 1, users: { "<userId>": { favorites: [key], muted: [key], dnd: {...}, notify?, display?, chat?, presence?, lock? } } }
 // key: "general" | "dm:<userId>" | "group:<groupId>". Zulip has no equivalent that also works for 1:1 rooms.
-export const PREF_KEY = /^(general|dm:\d{1,15}|group:\d{1,15})$/;
-export const DND_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-export const DEFAULT_DND = Object.freeze({ enabled: false, from: "18:00", to: "09:00", weekends: true });
-const PREF_LIST_MAX = 200;
-
-export function validPrefKeys(list) {
-  return Array.isArray(list) && list.length <= PREF_LIST_MAX && list.every((key) => typeof key === "string" && PREF_KEY.test(key));
-}
-
-export function validDnd(dnd) {
-  return Boolean(dnd) && typeof dnd === "object" && typeof dnd.enabled === "boolean" && typeof dnd.weekends === "boolean"
-    && DND_TIME.test(dnd.from) && DND_TIME.test(dnd.to);
-}
+// Field rules live in lib/settings.mjs (shared with the mock). Missing sections read as defaults.
+export { PREF_KEY, DND_TIME, DEFAULT_DND, validPrefKeys, validDnd } from "./settings.mjs";
 
 function validatePrefs(data) {
   if (!data || data.version !== 1 || !data.users || typeof data.users !== "object" || Array.isArray(data.users)) {
@@ -141,35 +150,50 @@ function validatePrefs(data) {
   }
   for (const [userId, prefs] of Object.entries(data.users)) {
     if (!/^\d{1,15}$/.test(userId)) throw new Error("invalid prefs user");
-    if (!validPrefKeys(prefs?.favorites) || !validPrefKeys(prefs?.muted) || !validDnd(prefs?.dnd)) throw new Error("invalid prefs");
+    if (!validStoredPrefs(prefs)) throw new Error("invalid prefs");
   }
   return data;
-}
-
-function prefsOf(record) {
-  return {
-    favorites: [...(record?.favorites || [])],
-    muted: [...(record?.muted || [])],
-    dnd: record?.dnd ? { ...record.dnd } : { ...DEFAULT_DND },
-  };
 }
 
 export function createPrefsStore(filePath) {
   const store = createJsonStore(filePath, { empty: () => ({ version: 1, users: {} }), validate: validatePrefs });
   return {
+    // Full prefs (defaults filled), without the policy / snooze presentation (settings.presentPrefs).
     async get(userId) {
-      return prefsOf((await store.read()).users[String(userId)]);
+      return fullPrefs((await store.read()).users[String(userId)]);
     },
-    // change: { favorites?, muted?, dnd? }, already validated by the caller.
-    async update(userId, change) {
+    // fn(current full prefs) -> { change } (full record to store) or { status, error } (nothing written).
+    async apply(userId, fn) {
       return store.update((data) => {
-        const next = prefsOf(data.users[String(userId)]);
-        if (change.favorites) next.favorites = [...new Set(change.favorites)];
-        if (change.muted) next.muted = [...new Set(change.muted)];
-        if (change.dnd) next.dnd = { enabled: change.dnd.enabled, from: change.dnd.from, to: change.dnd.to, weekends: change.dnd.weekends };
-        data.users[String(userId)] = next;
-        return { changed: true, prefs: prefsOf(next) };
+        const result = fn(fullPrefs(data.users[String(userId)]));
+        if (!result.change) return { changed: false, ...result };
+        data.users[String(userId)] = result.change;
+        return { changed: true, prefs: fullPrefs(result.change) };
       });
+    },
+  };
+}
+
+// ---- D1 admin policy: web/data/policy.json (see lib/settings.mjs) ----
+export function createPolicyStore(filePath) {
+  const store = createJsonStore(filePath, { empty: emptyPolicy, validate: validatePolicy });
+  let cache = null; // read on every upload / session call, so keep the last good copy
+  return {
+    async get() {
+      cache = await store.read();
+      return cache;
+    },
+    // Last value read or written; null before the first read.
+    cached: () => cache,
+    async apply(fn) {
+      const result = await store.update((data) => {
+        const out = fn(data);
+        if (!out.change) return { changed: false, ...out };
+        Object.assign(data, out.change);
+        return { changed: true, policy: { ...out.change } };
+      });
+      if (result.changed) cache = result.policy;
+      return result;
     },
   };
 }
@@ -226,12 +250,31 @@ export function createNoticeStore(filePath) {
   const store = createJsonStore(filePath, { empty: () => ({ version: 1, notices: {} }), validate: validateNotices });
   return {
     async get(key) {
-      return (await store.read()).notices[key] || null;
+      const notice = (await store.read()).notices[key];
+      return notice ? noticeRecord(notice) : null;
     },
+    // Every notice (for the activity centre).
+    async all() {
+      return (await store.read()).notices;
+    },
+    // notice: { messageId, setBy, setAt, ackRequired?, ackUserIds? } — a new notice starts with no acks.
     async set(key, notice) {
       return store.update((data) => {
-        data.notices[key] = { messageId: notice.messageId, setBy: notice.setBy, setAt: notice.setAt };
+        data.notices[key] = noticeRecord({ ...notice, acks: {} });
         return { changed: true };
+      });
+    },
+    // N8: records userId's ack of the notice now at key (if it is still messageId). Result:
+    // { status: "missing" | "notRequired" | "notTarget" | "already" | "done", notice }
+    async ack(key, messageId, userId, at) {
+      return store.update((data) => {
+        const notice = data.notices[key];
+        if (!notice || (messageId && notice.messageId !== messageId)) return { changed: false, status: "missing" };
+        if (!notice.ackRequired) return { changed: false, status: "notRequired", notice: noticeRecord(notice) };
+        if (!notice.ackUserIds.includes(userId)) return { changed: false, status: "notTarget", notice: noticeRecord(notice) };
+        if (notice.acks[String(userId)]) return { changed: false, status: "already", notice: noticeRecord(notice) };
+        notice.acks[String(userId)] = at;
+        return { changed: true, status: "done", notice: noticeRecord(notice) };
       });
     },
     async remove(key) {
